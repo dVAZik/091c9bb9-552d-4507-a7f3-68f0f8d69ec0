@@ -1,6 +1,6 @@
 -- Ultimate Farm Script - Fixed Version
--- Pathfinding до старта, простая ходьба до финиша
--- Ждёт сброса атрибутов + 1 секунда
+-- Pathfinding до старта, бег к финишу (вечно бежит пока не добежит)
+-- KickCollect и KickEnded убраны (автоматические)
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -18,7 +18,6 @@ local MIN_WAVE_DISTANCE = 300
 local MOVEMENT_TIMEOUT = 30
 local JUMP_COOLDOWN = 0.5
 local UPDATE_INTERVAL = 0.3
-local ATTRIBUTE_WAIT_EXTRA = 1 -- Дополнительная секунда после сброса атрибутов
 
 -- ============ ПЕРЕМЕННЫЕ ============
 local character, humanoid, rootPart
@@ -221,26 +220,34 @@ local function moveToKickReady()
 	return isInKickReady()
 end
 
--- Движение К ФИНИШУ (простая ходьба вперёд)
+-- Движение К ФИНИШУ (вечно бежит пока не добежит)
 local function moveToFinish()
 	if not updateCharacterReferences() then return false end
 	if not humanoid or not rootPart or not kickReadyPos then return false end
 	if humanoid.Health <= 0 then return false end
 	if isInKickReady() then return true end
 	
-	humanoid.WalkSpeed = 24; humanoid.AutoRotate = true; humanoid:MoveTo(kickReadyPos)
-	local st, lp, stuckTime = tick(), rootPart.Position, 0
+	humanoid.WalkSpeed = 24; humanoid.AutoRotate = true
 	
-	while isKickActive and tick() - st < MOVEMENT_TIMEOUT do
+	-- Вечно бежим пока не добежим (без таймаута)
+	while isKickActive do
 		if not updateCharacterReferences() then return false end
 		if humanoid.Health <= 0 then return false end
 		if isInKickReady() then return true end
-		if (rootPart.Position - lp).Magnitude < 0.3 then
-			stuckTime = stuckTime + 0.1
-			if stuckTime > 1 then humanoid.Jump = true; stuckTime = 0 end
-		else stuckTime = 0; lp = rootPart.Position end
-		humanoid:MoveTo(kickReadyPos); task.wait(0.1)
+		
+		humanoid:MoveTo(kickReadyPos)
+		
+		-- Проверка застревания
+		if humanoid.MoveDirection.Magnitude < 0.1 then
+			if tick() - lastJumpTime > JUMP_COOLDOWN then
+				humanoid.Jump = true
+				lastJumpTime = tick()
+			end
+		end
+		
+		task.wait(0.1)
 	end
+	
 	return isInKickReady()
 end
 
@@ -257,7 +264,7 @@ local function kickLoop()
 			if inGame == nil and kd == nil then
 				moveToKickReady() -- Pathfinding к старту
 			else
-				moveToFinish() -- Простая ходьба к финишу
+				moveToFinish() -- Вечный бег к финишу
 			end
 		end
 		
@@ -266,23 +273,6 @@ local function kickLoop()
 			local dist = getClosestWave()
 			if dist >= MIN_WAVE_DISTANCE and revKickEvent then
 				revKickEvent:FireServer(KICK_POWER)
-			end
-		end
-		
-		-- Ждём сброса атрибутов + 1 секунда
-		if isInKickReady() and inGame == true then
-			-- Ждём пока атрибуты станут nil
-			local waitStart = tick()
-			while isKickActive and tick() - waitStart < 30 do
-				if not updateCharacterReferences() then break end
-				inGame = player:GetAttribute("InGame")
-				kd = player:GetAttribute("KickDebounced")
-				if inGame == nil and kd == nil then
-					-- Атрибуты сброшены, ждём ещё 1 секунду
-					task.wait(ATTRIBUTE_WAIT_EXTRA)
-					break
-				end
-				task.wait(0.1)
 			end
 		end
 		
@@ -569,7 +559,7 @@ local function createGUI()
 	end
 	
 	local sections = {
-		{title = "⚽ AUTO KICK (+1s wait)", color = Color3.fromRGB(255, 200, 100), text = "KICK", ref = "isKickActive", loop = kickLoop},
+		{title = "⚽ AUTO KICK", color = Color3.fromRGB(255, 200, 100), text = "KICK", ref = "isKickActive", loop = kickLoop},
 		{title = "🎁 AUTO BATTLEPASS", color = Color3.fromRGB(100, 200, 255), text = "BP", ref = "isBpActive", loop = bpLoop},
 		{title = "💰 AUTO SELL", color = Color3.fromRGB(255, 200, 100), text = "SELL", ref = "isAutoSell", loop = autoSellLoop},
 		{title = "🎯 AUTO BONUS", color = Color3.fromRGB(200, 150, 255), text = "BONUS", ref = "isAutoBonus", loop = autoBonusLoop},
@@ -650,4 +640,4 @@ createGUI()
 player.CharacterAdded:Connect(function(c) character = c; task.wait(0.5); updateCharacterReferences() end)
 if player.Character then updateCharacterReferences() end
 getBPData()
-print("Farm Menu loaded! +1s wait after attributes reset.")
+print("Farm Menu loaded! Бег к финишу без остановки.")
