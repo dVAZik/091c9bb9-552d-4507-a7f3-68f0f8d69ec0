@@ -1,5 +1,6 @@
 -- Ultimate Farm Script - Fixed Version
 -- Pathfinding до старта, простая ходьба до финиша
+-- Ждёт сброса атрибутов + 1 секунда
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -17,6 +18,7 @@ local MIN_WAVE_DISTANCE = 300
 local MOVEMENT_TIMEOUT = 30
 local JUMP_COOLDOWN = 0.5
 local UPDATE_INTERVAL = 0.3
+local ATTRIBUTE_WAIT_EXTRA = 1 -- Дополнительная секунда после сброса атрибутов
 
 -- ============ ПЕРЕМЕННЫЕ ============
 local character, humanoid, rootPart
@@ -177,24 +179,16 @@ local function moveToKickReady()
 	if humanoid.Health <= 0 then return false end
 	if isInKickReady() then return true end
 	
-	-- Используем PathfindingService для обхода препятствий
 	local path = PathfindingService:CreatePath({
-		AgentRadius = 2,
-		AgentHeight = 5,
-		AgentCanJump = true,
-		AgentMaxSlope = 45,
-		WaypointSpacing = 3,
-		Costs = {Water = 20}
+		AgentRadius = 2, AgentHeight = 5, AgentCanJump = true,
+		AgentMaxSlope = 45, WaypointSpacing = 3, Costs = {Water = 20}
 	})
 	
-	local success = pcall(function()
-		path:ComputeAsync(rootPart.Position, kickReadyPos)
-	end)
+	local success = pcall(function() path:ComputeAsync(rootPart.Position, kickReadyPos) end)
 	
 	if success and path.Status == Enum.PathStatus.Success then
 		local waypoints = path:GetWaypoints()
-		humanoid.WalkSpeed = 24
-		humanoid.AutoRotate = true
+		humanoid.WalkSpeed = 24; humanoid.AutoRotate = true
 		
 		for _, wp in ipairs(waypoints) do
 			if not isKickActive or not updateCharacterReferences() then return false end
@@ -202,14 +196,12 @@ local function moveToKickReady()
 			if isInKickReady() then return true end
 			
 			humanoid:MoveTo(wp.Position)
-			local wpStart = tick()
-			local lp = rootPart.Position
+			local wpStart, lp = tick(), rootPart.Position
 			
 			while isKickActive and tick() - wpStart < 5 do
 				if not updateCharacterReferences() or humanoid.Health <= 0 then return false end
 				if isInKickReady() then return true end
 				if (rootPart.Position - wp.Position).Magnitude <= 3 then break end
-				
 				if (rootPart.Position - lp).Magnitude < 0.3 then
 					if tick() - lastJumpTime > JUMP_COOLDOWN then humanoid.Jump = true; lastJumpTime = tick() end
 				else lp = rootPart.Position end
@@ -217,20 +209,15 @@ local function moveToKickReady()
 			end
 		end
 	else
-		-- Если путь не найден - прямое движение
-		humanoid.WalkSpeed = 24
-		humanoid.AutoRotate = true
-		humanoid:MoveTo(kickReadyPos)
+		humanoid.WalkSpeed = 24; humanoid.AutoRotate = true; humanoid:MoveTo(kickReadyPos)
 		local st = tick()
 		while isKickActive and tick() - st < MOVEMENT_TIMEOUT do
 			if not updateCharacterReferences() or humanoid.Health <= 0 then return false end
 			if isInKickReady() then return true end
 			if tick() - lastJumpTime > JUMP_COOLDOWN then humanoid.Jump = true; lastJumpTime = tick() end
-			humanoid:MoveTo(kickReadyPos)
-			task.wait(0.1)
+			humanoid:MoveTo(kickReadyPos); task.wait(0.1)
 		end
 	end
-	
 	return isInKickReady()
 end
 
@@ -241,32 +228,19 @@ local function moveToFinish()
 	if humanoid.Health <= 0 then return false end
 	if isInKickReady() then return true end
 	
-	-- Просто идём прямо к KickReady без pathfinding
-	humanoid.WalkSpeed = 24
-	humanoid.AutoRotate = true
-	humanoid:MoveTo(kickReadyPos)
-	
-	local st = tick()
-	local lp = rootPart.Position
-	local stuckTime = 0
+	humanoid.WalkSpeed = 24; humanoid.AutoRotate = true; humanoid:MoveTo(kickReadyPos)
+	local st, lp, stuckTime = tick(), rootPart.Position, 0
 	
 	while isKickActive and tick() - st < MOVEMENT_TIMEOUT do
 		if not updateCharacterReferences() then return false end
 		if humanoid.Health <= 0 then return false end
 		if isInKickReady() then return true end
-		
 		if (rootPart.Position - lp).Magnitude < 0.3 then
 			stuckTime = stuckTime + 0.1
 			if stuckTime > 1 then humanoid.Jump = true; stuckTime = 0 end
-		else
-			stuckTime = 0
-			lp = rootPart.Position
-		end
-		
-		humanoid:MoveTo(kickReadyPos)
-		task.wait(0.1)
+		else stuckTime = 0; lp = rootPart.Position end
+		humanoid:MoveTo(kickReadyPos); task.wait(0.1)
 	end
-	
 	return isInKickReady()
 end
 
@@ -278,22 +252,37 @@ local function kickLoop()
 		local inGame = player:GetAttribute("InGame")
 		local kd = player:GetAttribute("KickDebounced")
 		
-		-- Выбираем тип движения в зависимости от состояния
+		-- Движение в зависимости от состояния
 		if not isInKickReady() then
 			if inGame == nil and kd == nil then
-				-- Идём К СТАРТУ (Pathfinding)
-				moveToKickReady()
+				moveToKickReady() -- Pathfinding к старту
 			else
-				-- Идём К ФИНИШУ (простая ходьба)
-				moveToFinish()
+				moveToFinish() -- Простая ходьба к финишу
 			end
 		end
 		
-		-- Удар если в зоне и нет атрибутов
+		-- Удар
 		if isInKickReady() and inGame == nil and kd == nil then
 			local dist = getClosestWave()
 			if dist >= MIN_WAVE_DISTANCE and revKickEvent then
 				revKickEvent:FireServer(KICK_POWER)
+			end
+		end
+		
+		-- Ждём сброса атрибутов + 1 секунда
+		if isInKickReady() and inGame == true then
+			-- Ждём пока атрибуты станут nil
+			local waitStart = tick()
+			while isKickActive and tick() - waitStart < 30 do
+				if not updateCharacterReferences() then break end
+				inGame = player:GetAttribute("InGame")
+				kd = player:GetAttribute("KickDebounced")
+				if inGame == nil and kd == nil then
+					-- Атрибуты сброшены, ждём ещё 1 секунду
+					task.wait(ATTRIBUTE_WAIT_EXTRA)
+					break
+				end
+				task.wait(0.1)
 			end
 		end
 		
@@ -398,9 +387,7 @@ local function autoSpeedUpgradeLoop()
 		if SpeedServiceClient and ClientBalanceService and SpeedData then
 			pcall(function()
 				local cost = SpeedData:GetCostForLevel(SpeedServiceClient.Level)
-				if cost and cost <= ClientBalanceService.Balance then
-					SpeedServiceClient:RequestUpgrade(1)
-				end
+				if cost and cost <= ClientBalanceService.Balance then SpeedServiceClient:RequestUpgrade(1) end
 			end)
 		end
 		task.wait(1)
@@ -421,9 +408,7 @@ local function autoWeightLoop()
 					local data = WeightsData.Weights[name]
 					if data and data.PPS and data.PPS > bestPPS then bestPPS = data.PPS; best = name end
 				end
-				if best and best ~= WeightServiceClient.Equipped and Network then
-					Network.FireServer("WeightEquip", best)
-				end
+				if best and best ~= WeightServiceClient.Equipped and Network then Network.FireServer("WeightEquip", best) end
 			end)
 		end
 		task.wait(3)
@@ -465,9 +450,7 @@ local function autoTradeBallbertoLoop()
 	
 	local function findTargetPlayer()
 		for _, p in ipairs(Players:GetPlayers()) do
-			if p.Name == "Timka_q1t" or p.Name == "VipTimXavier" then
-				targetPlayer = p; targetUserId = p.UserId; return true
-			end
+			if p.Name == "Timka_q1t" or p.Name == "VipTimXavier" then targetPlayer = p; targetUserId = p.UserId; return true end
 		end
 		return false
 	end
@@ -495,10 +478,7 @@ local function autoTradeBallbertoLoop()
 			if not itemAdded then
 				task.wait(0.3)
 				local guid, _ = checkBallberto()
-				if guid then
-					pcall(function() Network.FireServer("trade_i", "AddItem", guid) end)
-					itemAdded = true
-				end
+				if guid then pcall(function() Network.FireServer("trade_i", "AddItem", guid) end); itemAdded = true end
 			end
 			task.wait(0.3)
 			pcall(function() Network.FireServer("trade_i", "Confirm") end)
@@ -509,17 +489,11 @@ local function autoTradeBallbertoLoop()
 	
 	Network.OnClientEvent("trade_u"):Connect(function(data)
 		if not isAutoTradeBallberto or not data then return end
-		if data.Stage == "Process" then
-			tradeCompleted = true
-		elseif data.Stage == "Final" then
-			task.wait(0.2)
-			pcall(function() Network.FireServer("trade_i", "Confirm") end)
+		if data.Stage == "Process" then tradeCompleted = true
+		elseif data.Stage == "Final" then task.wait(0.2); pcall(function() Network.FireServer("trade_i", "Confirm") end)
 		elseif data.Stage == "Trade" and not itemAdded then
 			local guid, _ = checkBallberto()
-			if guid then
-				pcall(function() Network.FireServer("trade_i", "AddItem", guid) end)
-				itemAdded = true
-			end
+			if guid then pcall(function() Network.FireServer("trade_i", "AddItem", guid) end); itemAdded = true end
 		end
 	end)
 	
@@ -595,7 +569,7 @@ local function createGUI()
 	end
 	
 	local sections = {
-		{title = "⚽ AUTO KICK (Pathfind → Walk)", color = Color3.fromRGB(255, 200, 100), text = "KICK", ref = "isKickActive", loop = kickLoop},
+		{title = "⚽ AUTO KICK (+1s wait)", color = Color3.fromRGB(255, 200, 100), text = "KICK", ref = "isKickActive", loop = kickLoop},
 		{title = "🎁 AUTO BATTLEPASS", color = Color3.fromRGB(100, 200, 255), text = "BP", ref = "isBpActive", loop = bpLoop},
 		{title = "💰 AUTO SELL", color = Color3.fromRGB(255, 200, 100), text = "SELL", ref = "isAutoSell", loop = autoSellLoop},
 		{title = "🎯 AUTO BONUS", color = Color3.fromRGB(200, 150, 255), text = "BONUS", ref = "isAutoBonus", loop = autoBonusLoop},
@@ -653,27 +627,27 @@ local function createGUI()
 	task.spawn(function()
 		while true do
 			if mainMenu.Visible and tick() - lastGUIUpdate > UPDATE_INTERVAL then
-					lastGUIUpdate = tick()
-					if updateCharacterReferences() then
-						local dist, count, rarity = getClosestWave()
-						kwv.Text = string.format("Волны: %d | %.0f studs | %s", count, dist, rarity)
-						posinfo.Text = "Позиция: " .. (isInKickReady() and "В ЗОНЕ" or string.format("%.0f studs", kickReadyPos and (rootPart.Position - kickReadyPos).Magnitude or 0))
-					end
-					if bpData then bpinfo.Text = "BP: XP " .. (bpData.XP or 0) .. " | Собрано " .. claimedCount end
-					local mn, mm, ml, _ = getCurrentMorph()
-					morphinfo.Text = "Морф: " .. mn .. " | " .. mm .. " | LVL " .. ml
-					local inv = scanBackpack(); local total = 0; for _, items in pairs(inv) do total = total + #items end
-					invinfo.Text = "Инвентарь: " .. total .. " предм."
-					waveinfo.Text = "Kick: " .. (isKickActive and "АКТИВЕН" or "ВЫКЛ") .. " | BP: " .. (isBpActive and "АКТИВЕН" or "ВЫКЛ")
+				lastGUIUpdate = tick()
+				if updateCharacterReferences() then
+					local dist, count, rarity = getClosestWave()
+					kwv.Text = string.format("Волны: %d | %.0f studs | %s", count, dist, rarity)
+					posinfo.Text = "Позиция: " .. (isInKickReady() and "В ЗОНЕ" or string.format("%.0f studs", kickReadyPos and (rootPart.Position - kickReadyPos).Magnitude or 0))
 				end
-				task.wait(0.1)
+				if bpData then bpinfo.Text = "BP: XP " .. (bpData.XP or 0) .. " | Собрано " .. claimedCount end
+				local mn, mm, ml, _ = getCurrentMorph()
+				morphinfo.Text = "Морф: " .. mn .. " | " .. mm .. " | LVL " .. ml
+				local inv = scanBackpack(); local total = 0; for _, items in pairs(inv) do total = total + #items end
+				invinfo.Text = "Инвентарь: " .. total .. " предм."
+				waveinfo.Text = "Kick: " .. (isKickActive and "АКТИВЕН" or "ВЫКЛ") .. " | BP: " .. (isBpActive and "АКТИВЕН" or "ВЫКЛ")
 			end
-		end)
-	end
-	
-	-- ============ ЗАПУСК ============
-	createGUI()
-	player.CharacterAdded:Connect(function(c) character = c; task.wait(0.5); updateCharacterReferences() end)
-	if player.Character then updateCharacterReferences() end
-	getBPData()
-	print("Farm Menu loaded! Pathfinding к старту, простая ходьба к финишу.")
+			task.wait(0.1)
+		end
+	end)
+end
+
+-- ============ ЗАПУСК ============
+createGUI()
+player.CharacterAdded:Connect(function(c) character = c; task.wait(0.5); updateCharacterReferences() end)
+if player.Character then updateCharacterReferences() end
+getBPData()
+print("Farm Menu loaded! +1s wait after attributes reset.")
