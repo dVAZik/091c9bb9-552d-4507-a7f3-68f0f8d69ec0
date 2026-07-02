@@ -222,7 +222,7 @@ local function kickLoop()
 			local dist = getClosestWave()
 			if dist >= MIN_WAVE_DISTANCE and revKickEvent then revKickEvent:FireServer(KICK_POWER) end
 		elseif isInKickReady() and inGame == true and kd == false and revKickCollect then
-			revKickCollect:FireServer(); task.wait(0.1); if revKickEventEnded then revKickEventEnded:FireServer() end
+			task.wait(0.1);
 		end
 		task.wait(0.1)
 	end
