@@ -1,5 +1,5 @@
 -- Ultimate Farm Script - Fixed Version
--- Pathfinding до старта, ожидание камеры, бег к финишу (вечно)
+-- Pathfinding до старта, ожидание камеры + задержка 0.5-1с, бег к финишу (вечно)
 -- KickCollect и KickEnded убраны (автоматические)
 
 local Players = game:GetService("Players")
@@ -19,7 +19,9 @@ local MIN_WAVE_DISTANCE = 300
 local MOVEMENT_TIMEOUT = 30
 local JUMP_COOLDOWN = 0.5
 local UPDATE_INTERVAL = 0.3
-local CAMERA_WAIT_TIMEOUT = 5 -- Максимальное ожидание камеры (сек)
+local CAMERA_WAIT_TIMEOUT = 5
+local FINISH_DELAY_MIN = 0.5  -- Минимальная задержка перед бегом
+local FINISH_DELAY_MAX = 1.0  -- Максимальная задержка перед бегом
 
 -- ============ ПЕРЕМЕННЫЕ ============
 local character, humanoid, rootPart
@@ -165,18 +167,14 @@ local function getClosestWave()
 	return md, wc, cr
 end
 
--- Проверка что камера смотрит на игрока
 local function isCameraOnPlayer()
 	if not rootPart then return false end
 	local camPos = camera.CFrame.Position
 	local playerPos = rootPart.Position
 	local dist = (camPos - playerPos).Magnitude
-	
-	-- Камера должна быть относительно близко к игроку (не в анимации удара)
 	return dist < 50 and camera.CameraType == Enum.CameraType.Custom
 end
 
--- Ожидание пока камера вернётся к игроку
 local function waitForCameraOnPlayer()
 	local waitStart = tick()
 	while isKickActive and tick() - waitStart < CAMERA_WAIT_TIMEOUT do
@@ -184,7 +182,7 @@ local function waitForCameraOnPlayer()
 		if isCameraOnPlayer() then return true end
 		task.wait(0.1)
 	end
-	return true -- Продолжаем даже если камера не вернулась
+	return true
 end
 
 -- ============ KICK ============
@@ -244,7 +242,7 @@ local function moveToKickReady()
 	return isInKickReady()
 end
 
--- Движение К ФИНИШУ (ожидание камеры + вечный бег)
+-- Движение К ФИНИШУ (ожидание камеры + задержка 0.5-1с + вечный бег)
 local function moveToFinish()
 	if not updateCharacterReferences() then return false end
 	if not humanoid or not rootPart or not kickReadyPos then return false end
@@ -253,6 +251,15 @@ local function moveToFinish()
 	
 	-- Ждём пока камера вернётся к игроку
 	waitForCameraOnPlayer()
+	
+	-- Ждём случайную задержку 0.5-1 секунда
+	local delay = FINISH_DELAY_MIN + math.random() * (FINISH_DELAY_MAX - FINISH_DELAY_MIN)
+	local delayStart = tick()
+	while isKickActive and tick() - delayStart < delay do
+		if not updateCharacterReferences() then return false end
+		if isInKickReady() then return true end
+		task.wait(0.05)
+	end
 	
 	humanoid.WalkSpeed = 24; humanoid.AutoRotate = true
 	
@@ -264,7 +271,6 @@ local function moveToFinish()
 		
 		humanoid:MoveTo(kickReadyPos)
 		
-		-- Проверка застревания
 		if humanoid.MoveDirection.Magnitude < 0.1 then
 			if tick() - lastJumpTime > JUMP_COOLDOWN then
 				humanoid.Jump = true
@@ -286,16 +292,14 @@ local function kickLoop()
 		local inGame = player:GetAttribute("InGame")
 		local kd = player:GetAttribute("KickDebounced")
 		
-		-- Движение в зависимости от состояния
 		if not isInKickReady() then
 			if inGame == nil and kd == nil then
-				moveToKickReady() -- Pathfinding к старту
+				moveToKickReady()
 			else
-				moveToFinish() -- Ожидание камеры + вечный бег к финишу
+				moveToFinish()
 			end
 		end
 		
-		-- Удар
 		if isInKickReady() and inGame == nil and kd == nil then
 			local dist = getClosestWave()
 			if dist >= MIN_WAVE_DISTANCE and revKickEvent then
@@ -667,4 +671,4 @@ createGUI()
 player.CharacterAdded:Connect(function(c) character = c; task.wait(0.5); updateCharacterReferences() end)
 if player.Character then updateCharacterReferences() end
 getBPData()
-print("Farm Menu loaded! Ожидание камеры перед бегом к финишу.")
+print("Farm Menu loaded! Камера → задержка 0.5-1с → бег.")
