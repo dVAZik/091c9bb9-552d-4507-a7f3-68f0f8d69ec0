@@ -1,6 +1,7 @@
 -- Ultimate Farm Script - Final Version
 -- Все ошибки исправлены, настраиваемые параметры в GUI
 -- Скорость игрока = скорость волны при приближении
+-- Задержка перед бегом вкл/выкл
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -25,6 +26,7 @@ local STRAFE_CHANCE = 0.15
 local JUMP_CHANCE = 0.05
 local WAVE_DANGER_DISTANCE = 100
 local WAVE_CRITICAL_DISTANCE = 30
+local ENABLE_FINISH_DELAY = true
 
 -- ============ КОНСТАНТЫ ============
 local MOVEMENT_TIMEOUT = 30
@@ -70,6 +72,7 @@ local kickPowerInput, kickRadiusInput, minWaveDistInput
 local delayMinInput, delayMaxInput, waitMinInput, waitMaxInput
 local swayAmountInput, swayChanceInput, strafeChanceInput, jumpChanceInput
 local waveDangerInput, waveCriticalInput
+local delayToggleBtn, delayToggleStatus
 local currentTab = "Main"
 
 -- ============ ДАННЫЕ ============
@@ -155,6 +158,16 @@ local function findNetwork()
 	return nil
 end
 
+-- Безопасный FireServer
+local function safeFireServer(eventName, ...)
+	local net = findNetwork()
+	if not net then return end
+	local event = net:FindFirstChild(eventName)
+	if event then
+		pcall(function() event:FireServer(...) end)
+	end
+end
+
 local function updateCharacterReferences()
 	character = player.Character
 	if character then
@@ -190,13 +203,8 @@ local function getDynamicSpeed()
 	local waveDist, _, rarity = getClosestWave()
 	local waveSpeed = WAVE_SPEEDS[rarity] or 25
 	
-	if waveDist >= WAVE_DANGER_DISTANCE then
-		return baseWalkSpeed
-	end
-	
-	if waveDist <= WAVE_CRITICAL_DISTANCE then
-		return waveSpeed
-	end
+	if waveDist >= WAVE_DANGER_DISTANCE then return baseWalkSpeed end
+	if waveDist <= WAVE_CRITICAL_DISTANCE then return waveSpeed end
 	
 	local t = 1 - (waveDist - WAVE_CRITICAL_DISTANCE) / (WAVE_DANGER_DISTANCE - WAVE_CRITICAL_DISTANCE)
 	return baseWalkSpeed + (waveSpeed - baseWalkSpeed) * t
@@ -242,12 +250,14 @@ local function moveToFinish()
 	
 	waitForCameraOnPlayer()
 	
-	local delay = FINISH_DELAY_MIN + math.random() * (FINISH_DELAY_MAX - FINISH_DELAY_MIN)
-	local delayStart = tick()
-	while isKickActive and tick() - delayStart < delay do
-		if not updateCharacterReferences() then return false end
-		if isInKickReady() then return true end
-		task.wait(0.05)
+	if ENABLE_FINISH_DELAY then
+		local delay = FINISH_DELAY_MIN + math.random() * (FINISH_DELAY_MAX - FINISH_DELAY_MIN)
+		local delayStart = tick()
+		while isKickActive and tick() - delayStart < delay do
+			if not updateCharacterReferences() then return false end
+			if isInKickReady() then return true end
+			task.wait(0.05)
+		end
 	end
 	
 	local swayDirection = 0
@@ -361,9 +371,7 @@ local function bpLoop() while isBpActive do local n = autoClaim(); if n > 0 then
 
 -- ============ AUTO SELL ============
 local function sellItem(guid)
-	local net = findNetwork()
-	if not net then return false end
-	return pcall(function() net.FireServer("SELL_ENTITY", guid) end)
+	safeFireServer("SELL_ENTITY", guid)
 end
 
 local function autoSellLoop()
@@ -434,9 +442,8 @@ end
 
 -- ============ AUTO BEST WEIGHT ============
 local function autoWeightLoop()
-	local WeightServiceClient, Network, WeightsData
+	local WeightServiceClient, WeightsData
 	pcall(function() WeightServiceClient = require(ReplicatedStorage.Modules.ServicesLoader.WeightServiceClient) end)
-	pcall(function() Network = require(ReplicatedStorage.Shared.Packages.Network) end)
 	pcall(function() WeightsData = require(ReplicatedStorage.Shared.Data.WeightsData) end)
 	while isAutoWeight do
 		if WeightServiceClient and WeightsData then
@@ -446,7 +453,9 @@ local function autoWeightLoop()
 					local data = WeightsData.Weights[name]
 					if data and data.PPS and data.PPS > bestPPS then bestPPS = data.PPS; best = name end
 				end
-				if best and best ~= WeightServiceClient.Equipped and Network then Network.FireServer("WeightEquip", best) end
+				if best and best ~= WeightServiceClient.Equipped then
+					safeFireServer("WeightEquip", best)
+				end
 			end)
 		end
 		task.wait(3)
@@ -505,30 +514,46 @@ local function autoTradeLoop()
 	
 	Network.OnClientEvent("trade_n"):Connect(function(userId, time)
 		if isAutoTrade and targetUserId and userId == targetUserId then
-			pcall(function() Network.FireServer("trade_start", userId) end); tradeStarted = true; itemAdded = false
+			safeFireServer("trade_start", userId)
+			tradeStarted = true; itemAdded = false
 		end
 	end)
 	
 	Network.OnClientEvent("trade_s"):Connect(function(status, ...)
 		if not isAutoTrade then return end
 		if status == "Trading" then
-			if not itemAdded then task.wait(0.3); local guid, _, _ = findTradeItem(); if guid then pcall(function() Network.FireServer("trade_i", "AddItem", guid) end); itemAdded = true end end
-			task.wait(0.3); pcall(function() Network.FireServer("trade_i", "Confirm") end)
-		elseif status == "Cancelled" then tradeStarted, itemAdded, tradeCompleted = false, false, false end
+			if not itemAdded then
+				task.wait(0.3)
+				local guid, _, _ = findTradeItem()
+				if guid then safeFireServer("trade_i", "AddItem", guid); itemAdded = true end
+			end
+			task.wait(0.3)
+			safeFireServer("trade_i", "Confirm")
+		elseif status == "Cancelled" then
+			tradeStarted, itemAdded, tradeCompleted = false, false, false
+		end
 	end)
 	
 	Network.OnClientEvent("trade_u"):Connect(function(data)
 		if not isAutoTrade or not data then return end
 		if data.Stage == "Process" then tradeCompleted = true
-		elseif data.Stage == "Final" then task.wait(0.2); pcall(function() Network.FireServer("trade_i", "Confirm") end)
-		elseif data.Stage == "Trade" and not itemAdded then local guid, _, _ = findTradeItem(); if guid then pcall(function() Network.FireServer("trade_i", "AddItem", guid) end); itemAdded = true end end
+		elseif data.Stage == "Final" then task.wait(0.2); safeFireServer("trade_i", "Confirm")
+		elseif data.Stage == "Trade" and not itemAdded then
+			local guid, _, _ = findTradeItem()
+			if guid then safeFireServer("trade_i", "AddItem", guid); itemAdded = true end
+		end
 	end)
 	
 	while isAutoTrade do
 		local guid, _, _ = findTradeItem()
 		if guid and not tradeCompleted then
-			if findTargetPlayer() and not tradeStarted then pcall(function() Network.FireServer("trade_r", targetUserId) end); tradeStarted = true; task.wait(2) end
-		elseif tradeCompleted then tradeStarted, itemAdded, tradeCompleted = false, false, false end
+			if findTargetPlayer() and not tradeStarted then
+				safeFireServer("trade_r", targetUserId)
+				tradeStarted = true; task.wait(2)
+			end
+		elseif tradeCompleted then
+			tradeStarted, itemAdded, tradeCompleted = false, false, false
+		end
 		task.wait(3)
 	end
 end
@@ -554,6 +579,10 @@ local function applySettings()
 	if jumpChanceInput then JUMP_CHANCE = tonumberSafe(jumpChanceInput.Text, 0.05) end
 	if waveDangerInput then WAVE_DANGER_DISTANCE = tonumberSafe(waveDangerInput.Text, 100) end
 	if waveCriticalInput then WAVE_CRITICAL_DISTANCE = tonumberSafe(waveCriticalInput.Text, 30) end
+	
+	if delayToggleStatus then
+		delayToggleStatus.Text = ENABLE_FINISH_DELAY and "Задержка: " .. FINISH_DELAY_MIN .. "-" .. FINISH_DELAY_MAX .. " сек" or "Задержка: ОТКЛЮЧЕНА"
+	end
 end
 
 -- ============ GUI ============
@@ -585,7 +614,6 @@ local function createGUI()
 	Instance.new("UICorner", cb).CornerRadius = UDim.new(0, 15)
 	cb.MouseButton1Click:Connect(function() mainMenu.Visible = false; openButton.Visible = true end)
 	
-	-- Tabs
 	local tabBar = Instance.new("Frame"); tabBar.Size = UDim2.new(1, 0, 0, 32); tabBar.Position = UDim2.new(0, 0, 0, 40)
 	tabBar.BackgroundColor3 = Color3.fromRGB(22, 22, 22); tabBar.BorderSizePixel = 0; tabBar.Parent = mainMenu
 	local tabNames = {"⚽", "⚙", "🎒", "🧠"}
@@ -605,7 +633,6 @@ local function createGUI()
 	
 	local content = Instance.new("Frame"); content.Name = "Content"; content.Size = UDim2.new(1, 0, 1, -72); content.Position = UDim2.new(0, 0, 0, 72); content.BackgroundTransparency = 1; content.Parent = mainMenu
 	
-	-- Helpers
 	local function sec(scroll, title, h, color)
 		local s = Instance.new("Frame"); s.Size = UDim2.new(1, 0, 0, h); s.BackgroundColor3 = Color3.fromRGB(28, 28, 28); s.BorderSizePixel = 0; s.Parent = scroll
 		Instance.new("UICorner", s).CornerRadius = UDim.new(0, 8)
@@ -700,7 +727,7 @@ local function createGUI()
 	local settingsTab = Instance.new("Frame"); settingsTab.Name = "SettingsTab"; settingsTab.Size = UDim2.new(1, 0, 1, 0); settingsTab.BackgroundTransparency = 1; settingsTab.Visible = false; settingsTab.Parent = content
 	local setScroll = Instance.new("ScrollingFrame"); setScroll.Size = UDim2.new(1, -6, 1, 0); setScroll.Position = UDim2.new(0, 3, 0, 0)
 	setScroll.BackgroundTransparency = 1; setScroll.BorderSizePixel = 0; setScroll.ScrollBarThickness = 4
-	setScroll.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 100); setScroll.CanvasSize = UDim2.new(0, 0, 0, 700)
+	setScroll.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 100); setScroll.CanvasSize = UDim2.new(0, 0, 0, 850)
 	setScroll.Parent = settingsTab; Instance.new("UIListLayout", setScroll).Padding = UDim.new(0, 5)
 	
 	local kickSettingsSection = sec(setScroll, "⚽ НАСТРОЙКИ УДАРА", 110, Color3.fromRGB(255, 200, 100))
@@ -719,6 +746,28 @@ local function createGUI()
 	local moveSettingsSection2 = sec(setScroll, "🏃 ДВИЖЕНИЕ 2", 100, Color3.fromRGB(150, 255, 150))
 	lbl(moveSettingsSection2, "Шанс стрейфа:", 26); strafeChanceInput = input(moveSettingsSection2, 26, 0.15)
 	lbl(moveSettingsSection2, "Шанс прыжка:", 56); jumpChanceInput = input(moveSettingsSection2, 56, 0.05)
+	
+	local delayToggleSection = sec(setScroll, "⏱ ЗАДЕРЖКА ПЕРЕД БЕГОМ", 78, Color3.fromRGB(255, 200, 150))
+	delayToggleBtn = Instance.new("TextButton")
+	delayToggleBtn.Size = UDim2.new(1, -16, 0, 30); delayToggleBtn.Position = UDim2.new(0, 8, 0, 28)
+	delayToggleBtn.BackgroundColor3 = Color3.fromRGB(80, 180, 80); delayToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	delayToggleBtn.TextSize = 12; delayToggleBtn.Font = Enum.Font.GothamBold
+	delayToggleBtn.Text = "⏹ ВКЛЮЧЕНА"; delayToggleBtn.BorderSizePixel = 0; delayToggleBtn.Parent = delayToggleSection
+	Instance.new("UICorner", delayToggleBtn).CornerRadius = UDim.new(0, 5)
+	delayToggleStatus = lbl(delayToggleSection, "Задержка: " .. FINISH_DELAY_MIN .. "-" .. FINISH_DELAY_MAX .. " сек", 62)
+	
+	delayToggleBtn.MouseButton1Click:Connect(function()
+		ENABLE_FINISH_DELAY = not ENABLE_FINISH_DELAY
+		if ENABLE_FINISH_DELAY then
+			delayToggleBtn.Text = "⏹ ВКЛЮЧЕНА"
+			delayToggleBtn.BackgroundColor3 = Color3.fromRGB(80, 180, 80)
+			delayToggleStatus.Text = "Задержка: " .. FINISH_DELAY_MIN .. "-" .. FINISH_DELAY_MAX .. " сек"
+		else
+			delayToggleBtn.Text = "▶ ВЫКЛЮЧЕНА"
+			delayToggleBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
+			delayToggleStatus.Text = "Задержка: ОТКЛЮЧЕНА"
+		end
+	end)
 	
 	local waveSettingsSection = sec(setScroll, "🌊 НАСТРОЙКИ ВОЛНЫ", 110, Color3.fromRGB(150, 200, 255))
 	lbl(waveSettingsSection, "Дист. ускорения:", 26); waveDangerInput = input(waveSettingsSection, 26, 100)
@@ -819,4 +868,4 @@ createGUI()
 player.CharacterAdded:Connect(function(c) character = c; task.wait(0.5); updateCharacterReferences() end)
 if player.Character then updateCharacterReferences() end
 getBPData()
-print("Farm Menu loaded! Speed = wave speed when close.")
+print("Farm Menu loaded! All errors fixed, safe FireServer.")
