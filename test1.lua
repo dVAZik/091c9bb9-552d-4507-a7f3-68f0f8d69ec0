@@ -1,10 +1,10 @@
 -- Ultimate Farm Script - Final Version
--- Телепортация к старту, живой бег к финишу, динамическая скорость от волны
+-- Телепортация к старту, бег к финишу, скорость всегда выше волны
+-- Auto Trade: Ballberto + Netini Goalini
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
-local PathfindingService = game:GetService("PathfindingService")
 local CoreGui = game:GetService("CoreGui")
 local VirtualInputManager = game:GetService("VirtualInputManager")
 
@@ -28,28 +28,37 @@ local SWAY_CHANCE = 0.3
 local STRAFE_CHANCE = 0.15
 local JUMP_CHANCE = 0.05
 
--- Волна: динамическая скорость
+-- Волна
 local WAVE_DANGER_DISTANCE = 200
 local WAVE_CRITICAL_DISTANCE = 50
 local WAVE_MAX_BONUS_SPEED = 20
 
--- Телепортация
-local TELEPORT_OFFSET_Y = 5 -- Поднимаем на 5 studs при телепорте
+local WAVE_SPEEDS = {
+	Common = 11, Rare = 18, Epic = 32, Legendary = 45,
+	Mythic = 55, Godly = 68, Secret = 80, Rainbow = 90,
+	Hacked = 100, Demon = 110, Celestial = 125, Eternal = 135,
+	["Eternal+"] = 155, Abyssal = 165
+}
+
+local TELEPORT_OFFSET_Y = 5
 
 -- ============ ПЕРЕМЕННЫЕ ============
 local character, humanoid, rootPart
 local kickReadyPart, kickReadyPos
 local revKickEvent
 local isKickActive, isBpActive, isAutoSell, isAutoBonus = false, false, false, false
-local isAutoSpeedUpgrade, isAutoWeight, isAutoBuyWeight, isAutoTradeBallberto = false, false, false, false
+local isAutoSpeedUpgrade, isAutoWeight, isAutoBuyWeight, isAutoTrade = false, false, false, false
 local lastJumpTime, baseWalkSpeed = 0, 16
 local bpData, claimedCount = nil, 0
 local selectedBrainrots = {}
 local selectedMutations = {["None"] = true}
 local lastGUIUpdate = 0
-local hasTeleported = false -- Флаг чтобы не телепортироваться каждый кадр
+local hasTeleported = false
 
--- GUI элементы
+-- Предметы для авто-трейда
+local TRADE_ITEMS = {"Ballberto", "Netini Goalini"}
+
+-- GUI
 local screenGui, openButton, mainMenu
 local kickToggle, kickStatus, kickWaveLabel
 local bpToggle, bpStatus, bpInfoLabel
@@ -61,14 +70,13 @@ local buyWeightToggle, buyWeightStatus
 local tradeToggle, tradeStatus
 local currentTab = "Main"
 
--- ============ БЕЗОПАСНЫЕ ФУНКЦИИ ДАННЫХ ============
+-- ============ ДАННЫЕ ============
 local EntitiesData, MutationData
 pcall(function() EntitiesData = require(ReplicatedStorage.Shared.Data.EntitiesData) end)
 pcall(function() MutationData = require(ReplicatedStorage.Shared.Data.MutationData) end)
 
 local function safeCPS(name)
-	if not EntitiesData then return 0 end
-	if not EntitiesData.Brainrots then return 0 end
+	if not EntitiesData or not EntitiesData.Brainrots then return 0 end
 	local data = EntitiesData.Brainrots[name]
 	if not data then return 0 end
 	local cpsRaw = data.CPS
@@ -170,19 +178,21 @@ local function getClosestWave()
 end
 
 local function getDynamicSpeed()
-	local waveDist = getClosestWave()
+	local waveDist, _, rarity = getClosestWave()
+	local waveSpeed = WAVE_SPEEDS[rarity] or 25
+	local minSpeed = waveSpeed * 1.15
+	
 	if waveDist >= WAVE_DANGER_DISTANCE then return baseWalkSpeed
-	elseif waveDist <= WAVE_CRITICAL_DISTANCE then return baseWalkSpeed + WAVE_MAX_BONUS_SPEED
+	elseif waveDist <= WAVE_CRITICAL_DISTANCE then return math.max(baseWalkSpeed + WAVE_MAX_BONUS_SPEED, minSpeed)
 	else
 		local t = 1 - (waveDist - WAVE_CRITICAL_DISTANCE) / (WAVE_DANGER_DISTANCE - WAVE_CRITICAL_DISTANCE)
-		return baseWalkSpeed + WAVE_MAX_BONUS_SPEED * t
+		return math.max(baseWalkSpeed + WAVE_MAX_BONUS_SPEED * t, minSpeed)
 	end
 end
 
 local function isCameraOnPlayer()
 	if not rootPart then return false end
-	local dist = (camera.CFrame.Position - rootPart.Position).Magnitude
-	return dist < 50 and camera.CameraType == Enum.CameraType.Custom
+	return (camera.CFrame.Position - rootPart.Position).Magnitude < 50 and camera.CameraType == Enum.CameraType.Custom
 end
 
 local function waitForCameraOnPlayer()
@@ -195,23 +205,11 @@ local function waitForCameraOnPlayer()
 	return true
 end
 
--- Телепортация к старту
 local function teleportToStart()
-	if not kickReadyPos then return false end
-	if not rootPart then return false end
-	
-	-- Телепортируем игрока к KickReady (чуть выше)
-	local targetPos = kickReadyPos + Vector3.new(0, TELEPORT_OFFSET_Y, 0)
-	rootPart.CFrame = CFrame.new(targetPos)
-	
-	-- Небольшая задержка после телепорта
+	if not kickReadyPos or not rootPart then return false end
+	rootPart.CFrame = CFrame.new(kickReadyPos + Vector3.new(0, TELEPORT_OFFSET_Y, 0))
 	task.wait(0.3)
-	
-	-- Останавливаем движение
-	if humanoid then
-		humanoid:MoveTo(rootPart.Position)
-	end
-	
+	if humanoid then humanoid:MoveTo(rootPart.Position) end
 	hasTeleported = true
 	return true
 end
@@ -224,7 +222,6 @@ local function initKickRefs()
 	if net then revKickEvent = net:FindFirstChild("rev_KickEvent") end
 end
 
--- Движение К ФИНИШУ (после телепорта)
 local function moveToFinish()
 	if not updateCharacterReferences() then return false end
 	if not humanoid or not rootPart or not kickReadyPos then return false end
@@ -233,7 +230,6 @@ local function moveToFinish()
 	
 	waitForCameraOnPlayer()
 	
-	-- Задержка перед бегом
 	local delay = FINISH_DELAY_MIN + math.random() * (FINISH_DELAY_MAX - FINISH_DELAY_MIN)
 	local delayStart = tick()
 	while isKickActive and tick() - delayStart < delay do
@@ -250,10 +246,8 @@ local function moveToFinish()
 		if humanoid.Health <= 0 then return false end
 		if isInKickReady() then return true end
 		
-		-- Динамическая скорость
 		humanoid.WalkSpeed = getDynamicSpeed()
 		
-		-- Живое движение
 		if math.random() < SWAY_CHANCE then swayDirection = math.random(-1, 1) end
 		if math.random() < STRAFE_CHANCE then swayDirection = math.random() < 0.5 and -1 or 1 end
 		
@@ -288,21 +282,15 @@ local function kickLoop()
 		local inGame = player:GetAttribute("InGame")
 		local kd = player:GetAttribute("KickDebounced")
 		
-		-- Движение к старту: телепортация + бег к финишу
 		if not isInKickReady() then
 			if inGame == nil and kd == nil then
-				-- Готов к удару: телепортируемся к старту
-				if not hasTeleported then
-					teleportToStart()
-				end
+				if not hasTeleported then teleportToStart() end
 			else
-				-- Мяч в игре: бежим к финишу
 				hasTeleported = false
 				moveToFinish()
 			end
 		end
 		
-		-- Удар
 		if isInKickReady() and inGame == nil and kd == nil then
 			hasTeleported = false
 			local waitTime = FINISH_WAIT_MIN + math.random() * (FINISH_WAIT_MAX - FINISH_WAIT_MIN)
@@ -477,54 +465,80 @@ local function autoBuyWeightLoop()
 	end
 end
 
--- ============ AUTO TRADE BALLBERTO ============
-local function autoTradeBallbertoLoop()
+-- ============ AUTO TRADE (Ballberto + Netini Goalini) ============
+local function autoTradeLoop()
 	local Network
 	pcall(function() Network = require(ReplicatedStorage.Shared.Packages.Network) end)
 	if not Network then return end
-	local targetUserId, targetPlayer, tradeStarted, itemAdded, tradeCompleted = nil, nil, false, false, false
+	
+	local targetUserId, targetPlayer = nil, nil
+	local tradeStarted, itemAdded, tradeCompleted = false, false, false
 	
 	local function findTargetPlayer()
 		for _, p in ipairs(Players:GetPlayers()) do
-			if p.Name == "Timka_q1t" or p.Name == "VipTimXavier" then targetPlayer = p; targetUserId = p.UserId; return true end
+			if p.Name == "Timka_q1t" or p.Name == "VipTimXavier" then
+				targetPlayer = p; targetUserId = p.UserId; return true
+			end
 		end
 		return false
 	end
 	
-	local function checkBallberto()
-		if not player.Backpack then return false, nil end
+	local function findTradeItem()
+		if not player.Backpack then return false, nil, nil end
 		for _, item in ipairs(player.Backpack:GetChildren()) do
-			if item:IsA("Tool") and item.Name == "Ballberto" and item:HasTag("EntityTool") then return item:GetAttribute("GUID"), item end
+			if item:IsA("Tool") and item:HasTag("EntityTool") then
+				for _, tradeName in ipairs(TRADE_ITEMS) do
+					if item.Name == tradeName then
+						return item:GetAttribute("GUID"), item, tradeName
+					end
+				end
+			end
 		end
-		return false, nil
+		return false, nil, nil
 	end
 	
 	Network.OnClientEvent("trade_n"):Connect(function(userId, time)
-		if isAutoTradeBallberto and targetUserId and userId == targetUserId then
-			pcall(function() Network.FireServer("trade_start", userId) end); tradeStarted = true; itemAdded = false
+		if isAutoTrade and targetUserId and userId == targetUserId then
+			pcall(function() Network.FireServer("trade_start", userId) end)
+			tradeStarted = true; itemAdded = false
 		end
 	end)
 	
 	Network.OnClientEvent("trade_s"):Connect(function(status, ...)
-		if not isAutoTradeBallberto then return end
+		if not isAutoTrade then return end
 		if status == "Trading" then
-			if not itemAdded then task.wait(0.3); local guid, _ = checkBallberto(); if guid then pcall(function() Network.FireServer("trade_i", "AddItem", guid) end); itemAdded = true end end
-			task.wait(0.3); pcall(function() Network.FireServer("trade_i", "Confirm") end)
-		elseif status == "Cancelled" then tradeStarted, itemAdded, tradeCompleted = false, false, false end
+			if not itemAdded then
+				task.wait(0.3)
+				local guid, _, _ = findTradeItem()
+				if guid then pcall(function() Network.FireServer("trade_i", "AddItem", guid) end); itemAdded = true end
+			end
+			task.wait(0.3)
+			pcall(function() Network.FireServer("trade_i", "Confirm") end)
+		elseif status == "Cancelled" then
+			tradeStarted, itemAdded, tradeCompleted = false, false, false
+		end
 	end)
 	
 	Network.OnClientEvent("trade_u"):Connect(function(data)
-		if not isAutoTradeBallberto or not data then return end
+		if not isAutoTrade or not data then return end
 		if data.Stage == "Process" then tradeCompleted = true
 		elseif data.Stage == "Final" then task.wait(0.2); pcall(function() Network.FireServer("trade_i", "Confirm") end)
-		elseif data.Stage == "Trade" and not itemAdded then local guid, _ = checkBallberto(); if guid then pcall(function() Network.FireServer("trade_i", "AddItem", guid) end); itemAdded = true end end
+		elseif data.Stage == "Trade" and not itemAdded then
+			local guid, _, _ = findTradeItem()
+			if guid then pcall(function() Network.FireServer("trade_i", "AddItem", guid) end); itemAdded = true end
+		end
 	end)
 	
-	while isAutoTradeBallberto do
-		local guid, _ = checkBallberto()
+	while isAutoTrade do
+		local guid, _, _ = findTradeItem()
 		if guid and not tradeCompleted then
-			if findTargetPlayer() and not tradeStarted then pcall(function() Network.FireServer("trade_r", targetUserId) end); tradeStarted = true; task.wait(2) end
-		elseif tradeCompleted then tradeStarted, itemAdded, tradeCompleted = false, false, false end
+			if findTargetPlayer() and not tradeStarted then
+				pcall(function() Network.FireServer("trade_r", targetUserId) end)
+				tradeStarted = true; task.wait(2)
+			end
+		elseif tradeCompleted then
+			tradeStarted, itemAdded, tradeCompleted = false, false, false
+		end
 		task.wait(3)
 	end
 end
@@ -585,14 +599,14 @@ local function createGUI()
 	end
 	
 	local sections = {
-		{title = "⚽ AUTO KICK (Teleport)", color = Color3.fromRGB(255, 200, 100), text = "KICK", ref = "isKickActive", loop = kickLoop},
+		{title = "⚽ AUTO KICK (NoCatch)", color = Color3.fromRGB(255, 200, 100), text = "KICK", ref = "isKickActive", loop = kickLoop},
 		{title = "🎁 AUTO BATTLEPASS", color = Color3.fromRGB(100, 200, 255), text = "BP", ref = "isBpActive", loop = bpLoop},
 		{title = "💰 AUTO SELL", color = Color3.fromRGB(255, 200, 100), text = "SELL", ref = "isAutoSell", loop = autoSellLoop},
 		{title = "🎯 AUTO BONUS", color = Color3.fromRGB(200, 150, 255), text = "BONUS", ref = "isAutoBonus", loop = autoBonusLoop},
 		{title = "⬆ AUTO SPEED", color = Color3.fromRGB(150, 255, 150), text = "SPEED", ref = "isAutoSpeedUpgrade", loop = autoSpeedUpgradeLoop},
 		{title = "🏋 AUTO WEIGHT", color = Color3.fromRGB(255, 150, 150), text = "WEIGHT", ref = "isAutoWeight", loop = autoWeightLoop},
 		{title = "🛒 AUTO BUY WEIGHT", color = Color3.fromRGB(255, 220, 150), text = "BUY W", ref = "isAutoBuyWeight", loop = autoBuyWeightLoop},
-		{title = "🤝 TRADE BALLBERTO", color = Color3.fromRGB(200, 255, 200), text = "TRADE", ref = "isAutoTradeBallberto", loop = autoTradeBallbertoLoop},
+		{title = "🤝 AUTO TRADE", color = Color3.fromRGB(200, 255, 200), text = "TRADE", ref = "isAutoTrade", loop = autoTradeLoop},
 	}
 	
 	local refs, states = {}, {}
@@ -601,14 +615,14 @@ local function createGUI()
 			if n == "isKickActive" then isKickActive = v elseif n == "isBpActive" then isBpActive = v
 			elseif n == "isAutoSell" then isAutoSell = v elseif n == "isAutoBonus" then isAutoBonus = v
 			elseif n == "isAutoSpeedUpgrade" then isAutoSpeedUpgrade = v elseif n == "isAutoWeight" then isAutoWeight = v
-			elseif n == "isAutoBuyWeight" then isAutoBuyWeight = v elseif n == "isAutoTradeBallberto" then isAutoTradeBallberto = v
+			elseif n == "isAutoBuyWeight" then isAutoBuyWeight = v elseif n == "isAutoTrade" then isAutoTrade = v
 			end
 		end end)(s.ref)
 		states[s.ref] = (function(n) return function()
 			if n == "isKickActive" then return isKickActive elseif n == "isBpActive" then return isBpActive
 			elseif n == "isAutoSell" then return isAutoSell elseif n == "isAutoBonus" then return isAutoBonus
 			elseif n == "isAutoSpeedUpgrade" then return isAutoSpeedUpgrade elseif n == "isAutoWeight" then return isAutoWeight
-			elseif n == "isAutoBuyWeight" then return isAutoBuyWeight elseif n == "isAutoTradeBallberto" then return isAutoTradeBallberto
+			elseif n == "isAutoBuyWeight" then return isAutoBuyWeight elseif n == "isAutoTrade" then return isAutoTrade
 			end
 		end end)(s.ref)
 	end
@@ -665,4 +679,4 @@ createGUI()
 player.CharacterAdded:Connect(function(c) character = c; task.wait(0.5); updateCharacterReferences() end)
 if player.Character then updateCharacterReferences() end
 getBPData()
-print("Farm Menu loaded! Teleport to start + run to finish.")
+print("Farm Menu loaded! Teleport + NoCatch + Trade (Ballberto & Netini Goalini)")
