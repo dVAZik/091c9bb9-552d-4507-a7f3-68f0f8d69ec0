@@ -1,7 +1,5 @@
 -- Ultimate Farm Script - Final Version
--- Телепортация к старту, бег к финишу, скорость всегда выше волны
--- Auto Trade: Ballberto + Netini Goalini
--- НАСТРАИВАЕМЫЕ ПАРАМЕТРЫ В GUI
+-- Все ошибки исправлены, настраиваемые параметры в GUI
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -12,7 +10,7 @@ local VirtualInputManager = game:GetService("VirtualInputManager")
 local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 
--- ============ НАСТРАИВАЕМЫЕ ПАРАМЕТРЫ (можно менять в GUI) ============
+-- ============ НАСТРАИВАЕМЫЕ ПАРАМЕТРЫ ============
 local KICK_POWER = 10
 local KICK_READY_RADIUS = 10
 local MIN_WAVE_DISTANCE = 300
@@ -27,9 +25,9 @@ local JUMP_CHANCE = 0.05
 local WAVE_DANGER_DISTANCE = 200
 local WAVE_CRITICAL_DISTANCE = 50
 local WAVE_MAX_BONUS_SPEED = 20
-local WAVE_SPEED_MULTIPLIER = 1.15 -- Множитель скорости относительно волны
+local WAVE_SPEED_MULTIPLIER = 1.15
 
--- ============ КОНСТАНТЫ (не меняются) ============
+-- ============ КОНСТАНТЫ ============
 local MOVEMENT_TIMEOUT = 30
 local JUMP_COOLDOWN = 0.5
 local UPDATE_INTERVAL = 0.3
@@ -69,20 +67,17 @@ local weightToggle, weightStatus
 local buyWeightToggle, buyWeightStatus
 local tradeToggle, tradeStatus
 
--- Поля ввода для настройки
 local kickPowerInput, kickRadiusInput, minWaveDistInput
 local delayMinInput, delayMaxInput, waitMinInput, waitMaxInput
 local swayAmountInput, swayChanceInput, strafeChanceInput, jumpChanceInput
 local waveDangerInput, waveCriticalInput, waveBonusInput, waveMultInput
 local currentTab = "Main"
-local settingsTab, kickSettingsSection, moveSettingsSection, waveSettingsSection
 
 -- ============ ДАННЫЕ ============
 local EntitiesData, MutationData
 pcall(function() EntitiesData = require(ReplicatedStorage.Shared.Data.EntitiesData) end)
 pcall(function() MutationData = require(ReplicatedStorage.Shared.Data.MutationData) end)
 
--- Замени safeCPS на эту:
 local function safeCPS(name)
 	if not EntitiesData or not EntitiesData.Brainrots then return 0 end
 	local data = EntitiesData.Brainrots[name]
@@ -92,30 +87,19 @@ local function safeCPS(name)
 	
 	local num = nil
 	
-	-- Если это InfiniteMath объект с Value
 	pcall(function()
 		if type(cpsRaw) == "table" and cpsRaw.Value then
-			local val = tostring(cpsRaw.Value)
-			-- Убираем всё кроме цифр и точки
-			val = val:gsub("[^%d.]", "")
+			local val = tostring(cpsRaw.Value):gsub("[^%d.]", "")
 			if val ~= "" then num = tonumber(val) end
 		end
 	end)
 	
-	-- Если не получилось через Value
 	if not num then
-		local str = tostring(cpsRaw)
-		-- Убираем запятые, пробелы, буквы
-		str = str:gsub(",", ""):gsub("%s", ""):gsub("[^%d.]", "")
-		if str ~= "" then
-			num = tonumber(str)
-		end
+		local str = tostring(cpsRaw):gsub(",", ""):gsub("%s", ""):gsub("[^%d.]", "")
+		if str ~= "" then num = tonumber(str) end
 	end
 	
-	-- Если это уже число
-	if not num and type(cpsRaw) == "number" then
-		num = cpsRaw
-	end
+	if not num and type(cpsRaw) == "number" then num = cpsRaw end
 	
 	return num or 0
 end
@@ -552,9 +536,10 @@ local function autoTradeLoop()
 	end
 end
 
--- ============ ФУНКЦИЯ ОБНОВЛЕНИЯ НАСТРОЕК ============
+-- ============ ПРИМЕНЕНИЕ НАСТРОЕК ============
 local function applySettings()
 	local function tonumberSafe(str, default)
+		if not str or str == "" then return default end
 		local num = tonumber(str)
 		return num or default
 	end
@@ -661,7 +646,7 @@ local function createGUI()
 	local mainTab = Instance.new("Frame"); mainTab.Name = "MainTab"; mainTab.Size = UDim2.new(1, 0, 1, 0); mainTab.BackgroundTransparency = 1; mainTab.Parent = content
 	local ms = Instance.new("ScrollingFrame"); ms.Size = UDim2.new(1, -6, 1, 0); ms.Position = UDim2.new(0, 3, 0, 0)
 	ms.BackgroundTransparency = 1; ms.BorderSizePixel = 0; ms.ScrollBarThickness = 4
-	ms.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 100); ms.CanvasSize = UDim2.new(0, 0, 0, 800)
+	ms.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 100); ms.CanvasSize = UDim2.new(0, 0, 0, 850)
 	ms.Parent = mainTab; Instance.new("UIListLayout", ms).Padding = UDim.new(0, 5)
 	
 	local sections = {
@@ -708,11 +693,20 @@ local function createGUI()
 		end)
 	end
 	
+	-- Info panel в Main
+	local infoSection = sec(ms, "📊 ИНФО", 140, Color3.fromRGB(200, 200, 200))
+	local kwv = lbl(infoSection, "Волны: --", 26)
+	local bpinfo = lbl(infoSection, "BP: --", 44)
+	local morphinfo = lbl(infoSection, "Морф: --", 62)
+	local posinfo = lbl(infoSection, "Позиция: --", 80)
+	local invinfo = lbl(infoSection, "Инвентарь: --", 98)
+	local waveinfo = lbl(infoSection, "Статус: --", 116)
+	
 	-- === SETTINGS TAB ===
 	local settingsTab = Instance.new("Frame"); settingsTab.Name = "SettingsTab"; settingsTab.Size = UDim2.new(1, 0, 1, 0); settingsTab.BackgroundTransparency = 1; settingsTab.Visible = false; settingsTab.Parent = content
 	local setScroll = Instance.new("ScrollingFrame"); setScroll.Size = UDim2.new(1, -6, 1, 0); setScroll.Position = UDim2.new(0, 3, 0, 0)
 	setScroll.BackgroundTransparency = 1; setScroll.BorderSizePixel = 0; setScroll.ScrollBarThickness = 4
-	setScroll.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 100); setScroll.CanvasSize = UDim2.new(0, 0, 0, 950)
+	setScroll.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 100); setScroll.CanvasSize = UDim2.new(0, 0, 0, 700)
 	setScroll.Parent = settingsTab; Instance.new("UIListLayout", setScroll).Padding = UDim.new(0, 5)
 	
 	-- Настройки удара
@@ -730,12 +724,12 @@ local function createGUI()
 	lbl(moveSettingsSection, "Шатание (studs):", 146); swayAmountInput = input(moveSettingsSection, 146, 8)
 	lbl(moveSettingsSection, "Шанс шатания:", 176); swayChanceInput = input(moveSettingsSection, 176, 0.3)
 	
-	local moveSettingsSection2 = sec(setScroll, "🏃 НАСТРОЙКИ ДВИЖЕНИЯ 2", 140, Color3.fromRGB(150, 255, 150))
+	local moveSettingsSection2 = sec(setScroll, "🏃 НАСТРОЙКИ ДВИЖЕНИЯ 2", 100, Color3.fromRGB(150, 255, 150))
 	lbl(moveSettingsSection2, "Шанс стрейфа:", 26); strafeChanceInput = input(moveSettingsSection2, 26, 0.15)
 	lbl(moveSettingsSection2, "Шанс прыжка:", 56); jumpChanceInput = input(moveSettingsSection2, 56, 0.05)
 	
 	-- Настройки волны
-	local waveSettingsSection = sec(setScroll, "🌊 НАСТРОЙКИ ВОЛНЫ", 200, Color3.fromRGB(150, 200, 255))
+	local waveSettingsSection = sec(setScroll, "🌊 НАСТРОЙКИ ВОЛНЫ", 170, Color3.fromRGB(150, 200, 255))
 	lbl(waveSettingsSection, "Дист. ускорения:", 26); waveDangerInput = input(waveSettingsSection, 26, 200)
 	lbl(waveSettingsSection, "Крит. дистанция:", 56); waveCriticalInput = input(waveSettingsSection, 56, 50)
 	lbl(waveSettingsSection, "Макс. бонус:", 86); waveBonusInput = input(waveSettingsSection, 86, 20)
@@ -749,9 +743,7 @@ local function createGUI()
 	applyBtn.TextSize = 13; applyBtn.Font = Enum.Font.GothamBold; applyBtn.Text = "💾 ПРИМЕНИТЬ НАСТРОЙКИ"
 	applyBtn.BorderSizePixel = 0; applyBtn.Parent = applySection
 	Instance.new("UICorner", applyBtn).CornerRadius = UDim.new(0, 5)
-	applyBtn.MouseButton1Click:Connect(function()
-		applySettings()
-	end)
+	applyBtn.MouseButton1Click:Connect(function() applySettings() end)
 	
 	-- === INVENTORY TAB ===
 	local invTab = Instance.new("Frame"); invTab.Name = "InventoryTab"; invTab.Size = UDim2.new(1, 0, 1, 0); invTab.BackgroundTransparency = 1; invTab.Visible = false; invTab.Parent = content
@@ -797,18 +789,9 @@ local function createGUI()
 	end
 	brsc.CanvasSize = UDim2.new(0, 0, 0, 40 + #getBrainrotList() * 34 + 20 + #getMutationList() * 34 + 20)
 	
-	-- Info panel
-	local infoSection = sec(ms, "📊 ИНФО", 140, Color3.fromRGB(200, 200, 200))
-	local kwv = lbl(infoSection, "Волны: --", 26)
-	local bpinfo = lbl(infoSection, "BP: --", 44)
-	local morphinfo = lbl(infoSection, "Морф: --", 62)
-	local posinfo = lbl(infoSection, "Позиция: --", 80)
-	local invinfo = lbl(infoSection, "Инвентарь: --", 98)
-	local waveinfo = lbl(infoSection, "Статус: --", 116)
-	
-	scroll.CanvasSize = UDim2.new(0, 0, 0, #sections * 83 + 150)
 	openButton.MouseButton1Click:Connect(function() mainMenu.Visible = true; openButton.Visible = false end)
 	
+	-- Update loop
 	task.spawn(function()
 		while true do
 			if mainMenu.Visible and tick() - lastGUIUpdate > UPDATE_INTERVAL then
@@ -825,7 +808,6 @@ local function createGUI()
 				invinfo.Text = "Инвентарь: " .. total .. " предм."
 				waveinfo.Text = "Kick: " .. (isKickActive and "АКТИВЕН" or "ВЫКЛ") .. " | BP: " .. (isBpActive and "АКТИВЕН" or "ВЫКЛ")
 				
-				-- Update inventory tab
 				if currentTab == "Inventory" then
 					for _, c in ipairs(invsc:GetChildren()) do if c:IsA("Frame") and c.Name ~= "UIListLayout" then c:Destroy() end end
 					local inv = scanBackpack(); local y = 0
@@ -851,4 +833,4 @@ createGUI()
 player.CharacterAdded:Connect(function(c) character = c; task.wait(0.5); updateCharacterReferences() end)
 if player.Character then updateCharacterReferences() end
 getBPData()
-print("Farm Menu loaded! Customizable settings.")
+print("Farm Menu loaded! All errors fixed.")
