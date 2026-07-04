@@ -82,16 +82,41 @@ local EntitiesData, MutationData
 pcall(function() EntitiesData = require(ReplicatedStorage.Shared.Data.EntitiesData) end)
 pcall(function() MutationData = require(ReplicatedStorage.Shared.Data.MutationData) end)
 
+-- Замени safeCPS на эту:
 local function safeCPS(name)
 	if not EntitiesData or not EntitiesData.Brainrots then return 0 end
 	local data = EntitiesData.Brainrots[name]
 	if not data then return 0 end
-	local cpsRaw = data.CPS; if not cpsRaw then return 0 end
+	local cpsRaw = data.CPS
+	if not cpsRaw then return 0 end
+	
 	local num = nil
-	pcall(function() if type(cpsRaw) == "table" and cpsRaw.Value then num = tonumber(tostring(cpsRaw.Value)) end end)
-	if not num and type(cpsRaw) == "string" then num = tonumber(cpsRaw:gsub(",", ""):gsub("%s", "")) end
-	if not num and type(cpsRaw) == "number" then num = cpsRaw end
-	if not num then num = tonumber(tostring(cpsRaw):gsub(",", ""):gsub("%s", ""):gsub("[^%d.]", "")) end
+	
+	-- Если это InfiniteMath объект с Value
+	pcall(function()
+		if type(cpsRaw) == "table" and cpsRaw.Value then
+			local val = tostring(cpsRaw.Value)
+			-- Убираем всё кроме цифр и точки
+			val = val:gsub("[^%d.]", "")
+			if val ~= "" then num = tonumber(val) end
+		end
+	end)
+	
+	-- Если не получилось через Value
+	if not num then
+		local str = tostring(cpsRaw)
+		-- Убираем запятые, пробелы, буквы
+		str = str:gsub(",", ""):gsub("%s", ""):gsub("[^%d.]", "")
+		if str ~= "" then
+			num = tonumber(str)
+		end
+	end
+	
+	-- Если это уже число
+	if not num and type(cpsRaw) == "number" then
+		num = cpsRaw
+	end
+	
 	return num or 0
 end
 
