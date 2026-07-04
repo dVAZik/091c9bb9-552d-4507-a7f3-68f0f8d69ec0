@@ -1,6 +1,5 @@
 -- Ultimate Farm Script - Final Version
--- Pathfinding до старта, живой бег к финишу, ускорение от волны
--- Если волна близко - бежать прямо без остановок
+-- Pathfinding до старта, живой бег к финишу (без остановок), ускорение от волны
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -29,9 +28,8 @@ local FINISH_WAIT_MAX = 0.8
 local SWAY_AMOUNT = 8
 local SWAY_CHANCE = 0.3
 local STRAFE_CHANCE = 0.15
-local STOP_CHANCE = 0.05
+local JUMP_CHANCE = 0.05
 
--- Волна: если ближе этого расстояния - бежим прямо на максимальной скорости
 local WAVE_DANGER_DISTANCE = 100
 local WAVE_DANGER_SPEED = 35
 
@@ -168,15 +166,12 @@ local function getClosestWave()
 end
 
 local function isWaveDangerous()
-	local dist = getClosestWave()
-	return dist < WAVE_DANGER_DISTANCE
+	return getClosestWave() < WAVE_DANGER_DISTANCE
 end
 
 local function isCameraOnPlayer()
 	if not rootPart then return false end
-	local camPos = camera.CFrame.Position
-	local playerPos = rootPart.Position
-	local dist = (camPos - playerPos).Magnitude
+	local dist = (camera.CFrame.Position - rootPart.Position).Magnitude
 	return dist < 50 and camera.CameraType == Enum.CameraType.Custom
 end
 
@@ -244,7 +239,7 @@ local function moveToKickReady()
 	return isInKickReady()
 end
 
--- Движение К ФИНИШУ (живое, но если волна близко - бежим прямо на максималке)
+-- Движение К ФИНИШУ (живое, без остановок, ускорение от волны)
 local function moveToFinish()
 	if not updateCharacterReferences() then return false end
 	if not humanoid or not rootPart or not kickReadyPos then return false end
@@ -260,86 +255,48 @@ local function moveToFinish()
 		while isKickActive and tick() - delayStart < delay do
 			if not updateCharacterReferences() then return false end
 			if isInKickReady() then return true end
-			if isWaveDangerous() then break end -- Волна близко - прекращаем ждать
+			if isWaveDangerous() then break end
 			task.wait(0.05)
 		end
 	end
 	
-	-- Переменные для живого движения
 	local swayDirection = 0
-	local isStopped = false
-	local stopTimer = 0
+	humanoid.AutoRotate = true
 	
 	while isKickActive do
 		if not updateCharacterReferences() then return false end
 		if humanoid.Health <= 0 then return false end
 		if isInKickReady() then return true end
 		
-		-- ПРОВЕРКА ВОЛНЫ: если близко - бежим прямо на максимальной скорости
 		local waveDanger = isWaveDangerous()
 		
 		if waveDanger then
-			-- ОПАСНОСТЬ: бежим прямо к финишу на максимальной скорости
+			-- ОПАСНОСТЬ: бежим прямо на максимальной скорости
 			humanoid.WalkSpeed = WAVE_DANGER_SPEED
-			humanoid.AutoRotate = true
 			humanoid:MoveTo(kickReadyPos)
-			isStopped = false -- Не стоим когда волна близко
-			
-			-- Чаще прыгаем для скорости
-			if tick() - lastJumpTime > 0.3 then
-				humanoid.Jump = true
-				lastJumpTime = tick()
-			end
+			if tick() - lastJumpTime > 0.3 then humanoid.Jump = true; lastJumpTime = tick() end
 		else
-			-- БЕЗОПАСНО: живое движение
-			if isStopped then
-				humanoid:MoveTo(rootPart.Position)
-				stopTimer = stopTimer + 0.1
-				if stopTimer > 1 then isStopped = false; stopTimer = 0 end
-			else
-				-- Шанс остановиться
-				if math.random() < STOP_CHANCE then
-					isStopped = true; stopTimer = 0
-				else
-					-- Шанс сменить направление шатания
-					if math.random() < SWAY_CHANCE then
-						swayDirection = math.random(-1, 1)
-					end
-					
-					-- Шанс пойти боком
-					if math.random() < STRAFE_CHANCE then
-						swayDirection = math.random() < 0.5 and -1 or 1
-					end
-					
-					-- Вычисляем цель с шатанием
-					local targetPos = kickReadyPos
-					if swayDirection ~= 0 then
-						local forward = (kickReadyPos - rootPart.Position).Unit
-						local right = Vector3.new(-forward.Z, 0, forward.X)
-						targetPos = targetPos + right * swayDirection * SWAY_AMOUNT
-					end
-					
-					humanoid:MoveTo(targetPos)
-					
-					-- Случайная скорость
-					local speed = FINISH_SPEED_MIN + math.random() * (FINISH_SPEED_MAX - FINISH_SPEED_MIN)
-					humanoid.WalkSpeed = speed
-					
-					-- Случайный прыжок
-					if math.random() < 0.05 then
-						if tick() - lastJumpTime > JUMP_COOLDOWN then
-							humanoid.Jump = true; lastJumpTime = tick()
-						end
-					end
-				end
+			-- БЕЗОПАСНО: живое движение (без остановок!)
+			if math.random() < SWAY_CHANCE then swayDirection = math.random(-1, 1) end
+			if math.random() < STRAFE_CHANCE then swayDirection = math.random() < 0.5 and -1 or 1 end
+			
+			local targetPos = kickReadyPos
+			if swayDirection ~= 0 then
+				local forward = (kickReadyPos - rootPart.Position).Unit
+				local right = Vector3.new(-forward.Z, 0, forward.X)
+				targetPos = targetPos + right * swayDirection * SWAY_AMOUNT
+			end
+			
+			humanoid:MoveTo(targetPos)
+			humanoid.WalkSpeed = FINISH_SPEED_MIN + math.random() * (FINISH_SPEED_MAX - FINISH_SPEED_MIN)
+			
+			if math.random() < JUMP_CHANCE then
+				if tick() - lastJumpTime > JUMP_COOLDOWN then humanoid.Jump = true; lastJumpTime = tick() end
 			end
 		end
 		
-		-- Проверка застревания
-		if humanoid.MoveDirection.Magnitude < 0.1 and not isStopped then
-			if tick() - lastJumpTime > JUMP_COOLDOWN then
-				humanoid.Jump = true; lastJumpTime = tick()
-			end
+		if humanoid.MoveDirection.Magnitude < 0.1 then
+			if tick() - lastJumpTime > JUMP_COOLDOWN then humanoid.Jump = true; lastJumpTime = tick() end
 		end
 		
 		task.wait(0.1)
@@ -360,7 +317,6 @@ local function kickLoop()
 			if inGame == nil and kd == nil then moveToKickReady() else moveToFinish() end
 		end
 		
-		-- Удар с случайной задержкой
 		if isInKickReady() and inGame == nil and kd == nil then
 			local waitTime = FINISH_WAIT_MIN + math.random() * (FINISH_WAIT_MAX - FINISH_WAIT_MIN)
 			local waitStart = tick()
@@ -642,7 +598,7 @@ local function createGUI()
 	end
 	
 	local sections = {
-		{title = "⚽ AUTO KICK (WaveSafe)", color = Color3.fromRGB(255, 200, 100), text = "KICK", ref = "isKickActive", loop = kickLoop},
+		{title = "⚽ AUTO KICK (NoStop)", color = Color3.fromRGB(255, 200, 100), text = "KICK", ref = "isKickActive", loop = kickLoop},
 		{title = "🎁 AUTO BATTLEPASS", color = Color3.fromRGB(100, 200, 255), text = "BP", ref = "isBpActive", loop = bpLoop},
 		{title = "💰 AUTO SELL", color = Color3.fromRGB(255, 200, 100), text = "SELL", ref = "isAutoSell", loop = autoSellLoop},
 		{title = "🎯 AUTO BONUS", color = Color3.fromRGB(200, 150, 255), text = "BONUS", ref = "isAutoBonus", loop = autoBonusLoop},
@@ -722,4 +678,4 @@ createGUI()
 player.CharacterAdded:Connect(function(c) character = c; task.wait(0.5); updateCharacterReferences() end)
 if player.Character then updateCharacterReferences() end
 getBPData()
-print("Farm Menu loaded! Wave-safe: danger = full speed straight.")
+print("Farm Menu loaded! No stops, always moving.")
