@@ -1,5 +1,6 @@
 -- Ultimate Farm Script - Final Version
 -- Все ошибки исправлены, настраиваемые параметры в GUI
+-- Скорость игрока = скорость волны при приближении
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -22,10 +23,8 @@ local SWAY_AMOUNT = 8
 local SWAY_CHANCE = 0.3
 local STRAFE_CHANCE = 0.15
 local JUMP_CHANCE = 0.05
-local WAVE_DANGER_DISTANCE = 200
-local WAVE_CRITICAL_DISTANCE = 50
-local WAVE_MAX_BONUS_SPEED = 20
-local WAVE_SPEED_MULTIPLIER = 1.15
+local WAVE_DANGER_DISTANCE = 100
+local WAVE_CRITICAL_DISTANCE = 30
 
 -- ============ КОНСТАНТЫ ============
 local MOVEMENT_TIMEOUT = 30
@@ -70,7 +69,7 @@ local tradeToggle, tradeStatus
 local kickPowerInput, kickRadiusInput, minWaveDistInput
 local delayMinInput, delayMaxInput, waitMinInput, waitMaxInput
 local swayAmountInput, swayChanceInput, strafeChanceInput, jumpChanceInput
-local waveDangerInput, waveCriticalInput, waveBonusInput, waveMultInput
+local waveDangerInput, waveCriticalInput
 local currentTab = "Main"
 
 -- ============ ДАННЫЕ ============
@@ -84,23 +83,18 @@ local function safeCPS(name)
 	if not data then return 0 end
 	local cpsRaw = data.CPS
 	if not cpsRaw then return 0 end
-	
 	local num = nil
-	
 	pcall(function()
 		if type(cpsRaw) == "table" and cpsRaw.Value then
 			local val = tostring(cpsRaw.Value):gsub("[^%d.]", "")
 			if val ~= "" then num = tonumber(val) end
 		end
 	end)
-	
 	if not num then
 		local str = tostring(cpsRaw):gsub(",", ""):gsub("%s", ""):gsub("[^%d.]", "")
 		if str ~= "" then num = tonumber(str) end
 	end
-	
 	if not num and type(cpsRaw) == "number" then num = cpsRaw end
-	
 	return num or 0
 end
 
@@ -195,14 +189,17 @@ end
 local function getDynamicSpeed()
 	local waveDist, _, rarity = getClosestWave()
 	local waveSpeed = WAVE_SPEEDS[rarity] or 25
-	local minSpeed = waveSpeed * WAVE_SPEED_MULTIPLIER
 	
-	if waveDist >= WAVE_DANGER_DISTANCE then return baseWalkSpeed
-	elseif waveDist <= WAVE_CRITICAL_DISTANCE then return math.max(baseWalkSpeed + WAVE_MAX_BONUS_SPEED, minSpeed)
-	else
-		local t = 1 - (waveDist - WAVE_CRITICAL_DISTANCE) / (WAVE_DANGER_DISTANCE - WAVE_CRITICAL_DISTANCE)
-		return math.max(baseWalkSpeed + WAVE_MAX_BONUS_SPEED * t, minSpeed)
+	if waveDist >= WAVE_DANGER_DISTANCE then
+		return baseWalkSpeed
 	end
+	
+	if waveDist <= WAVE_CRITICAL_DISTANCE then
+		return waveSpeed
+	end
+	
+	local t = 1 - (waveDist - WAVE_CRITICAL_DISTANCE) / (WAVE_DANGER_DISTANCE - WAVE_CRITICAL_DISTANCE)
+	return baseWalkSpeed + (waveSpeed - baseWalkSpeed) * t
 end
 
 local function isCameraOnPlayer()
@@ -555,10 +552,8 @@ local function applySettings()
 	if swayChanceInput then SWAY_CHANCE = tonumberSafe(swayChanceInput.Text, 0.3) end
 	if strafeChanceInput then STRAFE_CHANCE = tonumberSafe(strafeChanceInput.Text, 0.15) end
 	if jumpChanceInput then JUMP_CHANCE = tonumberSafe(jumpChanceInput.Text, 0.05) end
-	if waveDangerInput then WAVE_DANGER_DISTANCE = tonumberSafe(waveDangerInput.Text, 200) end
-	if waveCriticalInput then WAVE_CRITICAL_DISTANCE = tonumberSafe(waveCriticalInput.Text, 50) end
-	if waveBonusInput then WAVE_MAX_BONUS_SPEED = tonumberSafe(waveBonusInput.Text, 20) end
-	if waveMultInput then WAVE_SPEED_MULTIPLIER = tonumberSafe(waveMultInput.Text, 1.15) end
+	if waveDangerInput then WAVE_DANGER_DISTANCE = tonumberSafe(waveDangerInput.Text, 100) end
+	if waveCriticalInput then WAVE_CRITICAL_DISTANCE = tonumberSafe(waveCriticalInput.Text, 30) end
 end
 
 -- ============ GUI ============
@@ -693,7 +688,6 @@ local function createGUI()
 		end)
 	end
 	
-	-- Info panel в Main
 	local infoSection = sec(ms, "📊 ИНФО", 140, Color3.fromRGB(200, 200, 200))
 	local kwv = lbl(infoSection, "Волны: --", 26)
 	local bpinfo = lbl(infoSection, "BP: --", 44)
@@ -709,13 +703,11 @@ local function createGUI()
 	setScroll.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 100); setScroll.CanvasSize = UDim2.new(0, 0, 0, 700)
 	setScroll.Parent = settingsTab; Instance.new("UIListLayout", setScroll).Padding = UDim.new(0, 5)
 	
-	-- Настройки удара
 	local kickSettingsSection = sec(setScroll, "⚽ НАСТРОЙКИ УДАРА", 110, Color3.fromRGB(255, 200, 100))
 	lbl(kickSettingsSection, "Сила удара:", 26); kickPowerInput = input(kickSettingsSection, 26, 10)
 	lbl(kickSettingsSection, "Радиус зоны:", 56); kickRadiusInput = input(kickSettingsSection, 56, 10)
 	lbl(kickSettingsSection, "Мин. дист. волны:", 86); minWaveDistInput = input(kickSettingsSection, 86, 300)
 	
-	-- Настройки движения
 	local moveSettingsSection = sec(setScroll, "🏃 НАСТРОЙКИ ДВИЖЕНИЯ", 200, Color3.fromRGB(150, 255, 150))
 	lbl(moveSettingsSection, "Задержка MIN:", 26); delayMinInput = input(moveSettingsSection, 26, 0.3)
 	lbl(moveSettingsSection, "Задержка MAX:", 56); delayMaxInput = input(moveSettingsSection, 56, 1.2)
@@ -724,18 +716,14 @@ local function createGUI()
 	lbl(moveSettingsSection, "Шатание (studs):", 146); swayAmountInput = input(moveSettingsSection, 146, 8)
 	lbl(moveSettingsSection, "Шанс шатания:", 176); swayChanceInput = input(moveSettingsSection, 176, 0.3)
 	
-	local moveSettingsSection2 = sec(setScroll, "🏃 НАСТРОЙКИ ДВИЖЕНИЯ 2", 100, Color3.fromRGB(150, 255, 150))
+	local moveSettingsSection2 = sec(setScroll, "🏃 ДВИЖЕНИЕ 2", 100, Color3.fromRGB(150, 255, 150))
 	lbl(moveSettingsSection2, "Шанс стрейфа:", 26); strafeChanceInput = input(moveSettingsSection2, 26, 0.15)
 	lbl(moveSettingsSection2, "Шанс прыжка:", 56); jumpChanceInput = input(moveSettingsSection2, 56, 0.05)
 	
-	-- Настройки волны
-	local waveSettingsSection = sec(setScroll, "🌊 НАСТРОЙКИ ВОЛНЫ", 170, Color3.fromRGB(150, 200, 255))
-	lbl(waveSettingsSection, "Дист. ускорения:", 26); waveDangerInput = input(waveSettingsSection, 26, 200)
-	lbl(waveSettingsSection, "Крит. дистанция:", 56); waveCriticalInput = input(waveSettingsSection, 56, 50)
-	lbl(waveSettingsSection, "Макс. бонус:", 86); waveBonusInput = input(waveSettingsSection, 86, 20)
-	lbl(waveSettingsSection, "Множ. скорости:", 116); waveMultInput = input(waveSettingsSection, 116, 1.15)
+	local waveSettingsSection = sec(setScroll, "🌊 НАСТРОЙКИ ВОЛНЫ", 110, Color3.fromRGB(150, 200, 255))
+	lbl(waveSettingsSection, "Дист. ускорения:", 26); waveDangerInput = input(waveSettingsSection, 26, 100)
+	lbl(waveSettingsSection, "Крит. дистанция:", 56); waveCriticalInput = input(waveSettingsSection, 56, 30)
 	
-	-- Кнопка применить
 	local applySection = sec(setScroll, "💾 ПРИМЕНИТЬ", 60, Color3.fromRGB(255, 255, 100))
 	local applyBtn = Instance.new("TextButton")
 	applyBtn.Size = UDim2.new(1, -16, 0, 30); applyBtn.Position = UDim2.new(0, 8, 0, 26)
@@ -759,7 +747,6 @@ local function createGUI()
 	brsc.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 100); brsc.CanvasSize = UDim2.new(0, 0, 0, 0)
 	brsc.Parent = brTab; Instance.new("UIListLayout", brsc).Padding = UDim.new(0, 4)
 	
-	-- Brainrot fill
 	local brl = Instance.new("TextLabel"); brl.Size = UDim2.new(1, 0, 0, 20); brl.BackgroundTransparency = 1
 	brl.Text = "🧠 Brainrot (не продавать):"; brl.TextColor3 = Color3.fromRGB(200, 200, 200); brl.TextSize = 12; brl.Font = Enum.Font.GothamBold; brl.TextXAlignment = Enum.TextXAlignment.Left; brl.Parent = brsc
 	for _, br in ipairs(getBrainrotList()) do
@@ -791,7 +778,6 @@ local function createGUI()
 	
 	openButton.MouseButton1Click:Connect(function() mainMenu.Visible = true; openButton.Visible = false end)
 	
-	-- Update loop
 	task.spawn(function()
 		while true do
 			if mainMenu.Visible and tick() - lastGUIUpdate > UPDATE_INTERVAL then
@@ -833,4 +819,4 @@ createGUI()
 player.CharacterAdded:Connect(function(c) character = c; task.wait(0.5); updateCharacterReferences() end)
 if player.Character then updateCharacterReferences() end
 getBPData()
-print("Farm Menu loaded! All errors fixed.")
+print("Farm Menu loaded! Speed = wave speed when close.")
