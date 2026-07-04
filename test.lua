@@ -1,6 +1,5 @@
 -- Ultimate Farm Script - Final Version
--- Pathfinding до старта, живой бег к финишу (без остановок)
--- Скорость = базовая скорость игрока + бонус от волны
+-- Телепортация к старту, живой бег к финишу, динамическая скорость от волны
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -30,9 +29,12 @@ local STRAFE_CHANCE = 0.15
 local JUMP_CHANCE = 0.05
 
 -- Волна: динамическая скорость
-local WAVE_DANGER_DISTANCE = 200   -- Начинаем ускоряться
-local WAVE_CRITICAL_DISTANCE = 50  -- Максимальное ускорение
-local WAVE_MAX_BONUS_SPEED = 20    -- Максимальная добавка к скорости
+local WAVE_DANGER_DISTANCE = 200
+local WAVE_CRITICAL_DISTANCE = 50
+local WAVE_MAX_BONUS_SPEED = 20
+
+-- Телепортация
+local TELEPORT_OFFSET_Y = 5 -- Поднимаем на 5 studs при телепорте
 
 -- ============ ПЕРЕМЕННЫЕ ============
 local character, humanoid, rootPart
@@ -45,6 +47,7 @@ local bpData, claimedCount = nil, 0
 local selectedBrainrots = {}
 local selectedMutations = {["None"] = true}
 local lastGUIUpdate = 0
+local hasTeleported = false -- Флаг чтобы не телепортироваться каждый кадр
 
 -- GUI элементы
 local screenGui, openButton, mainMenu
@@ -166,21 +169,13 @@ local function getClosestWave()
 	return md, wc, cr
 end
 
--- Динамическая скорость в зависимости от расстояния до волны
 local function getDynamicSpeed()
 	local waveDist = getClosestWave()
-	
-	if waveDist >= WAVE_DANGER_DISTANCE then
-		-- Волна далеко - базовая скорость игрока
-		return baseWalkSpeed
-	elseif waveDist <= WAVE_CRITICAL_DISTANCE then
-		-- Волна очень близко - максимальная скорость
-		return baseWalkSpeed + WAVE_MAX_BONUS_SPEED
+	if waveDist >= WAVE_DANGER_DISTANCE then return baseWalkSpeed
+	elseif waveDist <= WAVE_CRITICAL_DISTANCE then return baseWalkSpeed + WAVE_MAX_BONUS_SPEED
 	else
-		-- Плавное увеличение скорости
 		local t = 1 - (waveDist - WAVE_CRITICAL_DISTANCE) / (WAVE_DANGER_DISTANCE - WAVE_CRITICAL_DISTANCE)
-		local bonus = WAVE_MAX_BONUS_SPEED * t
-		return baseWalkSpeed + bonus
+		return baseWalkSpeed + WAVE_MAX_BONUS_SPEED * t
 	end
 end
 
@@ -200,6 +195,27 @@ local function waitForCameraOnPlayer()
 	return true
 end
 
+-- Телепортация к старту
+local function teleportToStart()
+	if not kickReadyPos then return false end
+	if not rootPart then return false end
+	
+	-- Телепортируем игрока к KickReady (чуть выше)
+	local targetPos = kickReadyPos + Vector3.new(0, TELEPORT_OFFSET_Y, 0)
+	rootPart.CFrame = CFrame.new(targetPos)
+	
+	-- Небольшая задержка после телепорта
+	task.wait(0.3)
+	
+	-- Останавливаем движение
+	if humanoid then
+		humanoid:MoveTo(rootPart.Position)
+	end
+	
+	hasTeleported = true
+	return true
+end
+
 -- ============ KICK ============
 local function initKickRefs()
 	local areas = workspace:FindFirstChild("Areas")
@@ -208,56 +224,7 @@ local function initKickRefs()
 	if net then revKickEvent = net:FindFirstChild("rev_KickEvent") end
 end
 
--- Движение К СТАРТУ (Pathfinding)
-local function moveToKickReady()
-	if not updateCharacterReferences() then return false end
-	if not humanoid or not rootPart or not kickReadyPos then return false end
-	if humanoid.Health <= 0 then return false end
-	if isInKickReady() then return true end
-	
-	local path = PathfindingService:CreatePath({
-		AgentRadius = 2, AgentHeight = 5, AgentCanJump = true,
-		AgentMaxSlope = 45, WaypointSpacing = 3, Costs = {Water = 20}
-	})
-	
-	local success = pcall(function() path:ComputeAsync(rootPart.Position, kickReadyPos) end)
-	
-	if success and path.Status == Enum.PathStatus.Success then
-		local waypoints = path:GetWaypoints()
-		humanoid.WalkSpeed = baseWalkSpeed
-		humanoid.AutoRotate = true
-		for _, wp in ipairs(waypoints) do
-			if not isKickActive or not updateCharacterReferences() then return false end
-			if humanoid.Health <= 0 then return false end
-			if isInKickReady() then return true end
-			humanoid:MoveTo(wp.Position)
-			local wpStart, lp = tick(), rootPart.Position
-			while isKickActive and tick() - wpStart < 5 do
-				if not updateCharacterReferences() or humanoid.Health <= 0 then return false end
-				if isInKickReady() then return true end
-				if (rootPart.Position - wp.Position).Magnitude <= 3 then break end
-				if (rootPart.Position - lp).Magnitude < 0.3 then
-					if tick() - lastJumpTime > JUMP_COOLDOWN then humanoid.Jump = true; lastJumpTime = tick() end
-				else lp = rootPart.Position end
-				task.wait(0.1)
-			end
-		end
-	else
-		humanoid.WalkSpeed = baseWalkSpeed
-		humanoid.AutoRotate = true
-		humanoid:MoveTo(kickReadyPos)
-		local st = tick()
-		while isKickActive and tick() - st < MOVEMENT_TIMEOUT do
-			if not updateCharacterReferences() or humanoid.Health <= 0 then return false end
-			if isInKickReady() then return true end
-			if tick() - lastJumpTime > JUMP_COOLDOWN then humanoid.Jump = true; lastJumpTime = tick() end
-			humanoid:MoveTo(kickReadyPos); task.wait(0.1)
-		end
-	end
-	return isInKickReady()
-end
-
--- Движение К ФИНИШУ (базовая скорость + бонус от волны, без остановок)
+-- Движение К ФИНИШУ (после телепорта)
 local function moveToFinish()
 	if not updateCharacterReferences() then return false end
 	if not humanoid or not rootPart or not kickReadyPos then return false end
@@ -283,10 +250,10 @@ local function moveToFinish()
 		if humanoid.Health <= 0 then return false end
 		if isInKickReady() then return true end
 		
-		-- ДИНАМИЧЕСКАЯ СКОРОСТЬ: базовая + бонус от волны
+		-- Динамическая скорость
 		humanoid.WalkSpeed = getDynamicSpeed()
 		
-		-- Живое движение (без остановок)
+		-- Живое движение
 		if math.random() < SWAY_CHANCE then swayDirection = math.random(-1, 1) end
 		if math.random() < STRAFE_CHANCE then swayDirection = math.random() < 0.5 and -1 or 1 end
 		
@@ -299,12 +266,10 @@ local function moveToFinish()
 		
 		humanoid:MoveTo(targetPos)
 		
-		-- Случайный прыжок
 		if math.random() < JUMP_CHANCE then
 			if tick() - lastJumpTime > JUMP_COOLDOWN then humanoid.Jump = true; lastJumpTime = tick() end
 		end
 		
-		-- Застревание
 		if humanoid.MoveDirection.Magnitude < 0.1 then
 			if tick() - lastJumpTime > JUMP_COOLDOWN then humanoid.Jump = true; lastJumpTime = tick() end
 		end
@@ -323,11 +288,23 @@ local function kickLoop()
 		local inGame = player:GetAttribute("InGame")
 		local kd = player:GetAttribute("KickDebounced")
 		
+		-- Движение к старту: телепортация + бег к финишу
 		if not isInKickReady() then
-			if inGame == nil and kd == nil then moveToKickReady() else moveToFinish() end
+			if inGame == nil and kd == nil then
+				-- Готов к удару: телепортируемся к старту
+				if not hasTeleported then
+					teleportToStart()
+				end
+			else
+				-- Мяч в игре: бежим к финишу
+				hasTeleported = false
+				moveToFinish()
+			end
 		end
 		
+		-- Удар
 		if isInKickReady() and inGame == nil and kd == nil then
+			hasTeleported = false
 			local waitTime = FINISH_WAIT_MIN + math.random() * (FINISH_WAIT_MAX - FINISH_WAIT_MIN)
 			local waitStart = tick()
 			while isKickActive and tick() - waitStart < waitTime do
@@ -608,7 +585,7 @@ local function createGUI()
 	end
 	
 	local sections = {
-		{title = "⚽ AUTO KICK (DynSpeed)", color = Color3.fromRGB(255, 200, 100), text = "KICK", ref = "isKickActive", loop = kickLoop},
+		{title = "⚽ AUTO KICK (Teleport)", color = Color3.fromRGB(255, 200, 100), text = "KICK", ref = "isKickActive", loop = kickLoop},
 		{title = "🎁 AUTO BATTLEPASS", color = Color3.fromRGB(100, 200, 255), text = "BP", ref = "isBpActive", loop = bpLoop},
 		{title = "💰 AUTO SELL", color = Color3.fromRGB(255, 200, 100), text = "SELL", ref = "isAutoSell", loop = autoSellLoop},
 		{title = "🎯 AUTO BONUS", color = Color3.fromRGB(200, 150, 255), text = "BONUS", ref = "isAutoBonus", loop = autoBonusLoop},
@@ -688,4 +665,4 @@ createGUI()
 player.CharacterAdded:Connect(function(c) character = c; task.wait(0.5); updateCharacterReferences() end)
 if player.Character then updateCharacterReferences() end
 getBPData()
-print("Farm Menu loaded! Dynamic speed: base + wave bonus.")
+print("Farm Menu loaded! Teleport to start + run to finish.")
