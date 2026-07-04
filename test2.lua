@@ -1,6 +1,7 @@
 -- Ultimate Farm Script - Final Version
 -- Телепортация к старту, бег к финишу, скорость всегда выше волны
 -- Auto Trade: Ballberto + Netini Goalini
+-- НАСТРАИВАЕМЫЕ ПАРАМЕТРЫ В GUI
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -11,14 +12,10 @@ local VirtualInputManager = game:GetService("VirtualInputManager")
 local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 
--- ============ КОНСТАНТЫ ============
+-- ============ НАСТРАИВАЕМЫЕ ПАРАМЕТРЫ (можно менять в GUI) ============
 local KICK_POWER = 10
 local KICK_READY_RADIUS = 10
 local MIN_WAVE_DISTANCE = 300
-local MOVEMENT_TIMEOUT = 30
-local JUMP_COOLDOWN = 0.5
-local UPDATE_INTERVAL = 0.3
-local CAMERA_WAIT_TIMEOUT = 5
 local FINISH_DELAY_MIN = 0.3
 local FINISH_DELAY_MAX = 1.2
 local FINISH_WAIT_MIN = 0.1
@@ -27,11 +24,17 @@ local SWAY_AMOUNT = 8
 local SWAY_CHANCE = 0.3
 local STRAFE_CHANCE = 0.15
 local JUMP_CHANCE = 0.05
-
--- Волна
 local WAVE_DANGER_DISTANCE = 200
 local WAVE_CRITICAL_DISTANCE = 50
 local WAVE_MAX_BONUS_SPEED = 20
+local WAVE_SPEED_MULTIPLIER = 1.15 -- Множитель скорости относительно волны
+
+-- ============ КОНСТАНТЫ (не меняются) ============
+local MOVEMENT_TIMEOUT = 30
+local JUMP_COOLDOWN = 0.5
+local UPDATE_INTERVAL = 0.3
+local CAMERA_WAIT_TIMEOUT = 5
+local TELEPORT_OFFSET_Y = 5
 
 local WAVE_SPEEDS = {
 	Common = 11, Rare = 18, Epic = 32, Legendary = 45,
@@ -39,8 +42,6 @@ local WAVE_SPEEDS = {
 	Hacked = 100, Demon = 110, Celestial = 125, Eternal = 135,
 	["Eternal+"] = 155, Abyssal = 165
 }
-
-local TELEPORT_OFFSET_Y = 5
 
 -- ============ ПЕРЕМЕННЫЕ ============
 local character, humanoid, rootPart
@@ -55,7 +56,6 @@ local selectedMutations = {["None"] = true}
 local lastGUIUpdate = 0
 local hasTeleported = false
 
--- Предметы для авто-трейда
 local TRADE_ITEMS = {"Ballberto", "Netini Goalini"}
 
 -- GUI
@@ -68,7 +68,14 @@ local speedUpgradeToggle, speedUpgradeStatus
 local weightToggle, weightStatus
 local buyWeightToggle, buyWeightStatus
 local tradeToggle, tradeStatus
+
+-- Поля ввода для настройки
+local kickPowerInput, kickRadiusInput, minWaveDistInput
+local delayMinInput, delayMaxInput, waitMinInput, waitMaxInput
+local swayAmountInput, swayChanceInput, strafeChanceInput, jumpChanceInput
+local waveDangerInput, waveCriticalInput, waveBonusInput, waveMultInput
 local currentTab = "Main"
+local settingsTab, kickSettingsSection, moveSettingsSection, waveSettingsSection
 
 -- ============ ДАННЫЕ ============
 local EntitiesData, MutationData
@@ -79,8 +86,7 @@ local function safeCPS(name)
 	if not EntitiesData or not EntitiesData.Brainrots then return 0 end
 	local data = EntitiesData.Brainrots[name]
 	if not data then return 0 end
-	local cpsRaw = data.CPS
-	if not cpsRaw then return 0 end
+	local cpsRaw = data.CPS; if not cpsRaw then return 0 end
 	local num = nil
 	pcall(function() if type(cpsRaw) == "table" and cpsRaw.Value then num = tonumber(tostring(cpsRaw.Value)) end end)
 	if not num and type(cpsRaw) == "string" then num = tonumber(cpsRaw:gsub(",", ""):gsub("%s", "")) end
@@ -180,7 +186,7 @@ end
 local function getDynamicSpeed()
 	local waveDist, _, rarity = getClosestWave()
 	local waveSpeed = WAVE_SPEEDS[rarity] or 25
-	local minSpeed = waveSpeed * 1.15
+	local minSpeed = waveSpeed * WAVE_SPEED_MULTIPLIER
 	
 	if waveDist >= WAVE_DANGER_DISTANCE then return baseWalkSpeed
 	elseif waveDist <= WAVE_CRITICAL_DISTANCE then return math.max(baseWalkSpeed + WAVE_MAX_BONUS_SPEED, minSpeed)
@@ -465,20 +471,16 @@ local function autoBuyWeightLoop()
 	end
 end
 
--- ============ AUTO TRADE (Ballberto + Netini Goalini) ============
+-- ============ AUTO TRADE ============
 local function autoTradeLoop()
 	local Network
 	pcall(function() Network = require(ReplicatedStorage.Shared.Packages.Network) end)
 	if not Network then return end
-	
-	local targetUserId, targetPlayer = nil, nil
-	local tradeStarted, itemAdded, tradeCompleted = false, false, false
+	local targetUserId, targetPlayer, tradeStarted, itemAdded, tradeCompleted = nil, nil, false, false, false
 	
 	local function findTargetPlayer()
 		for _, p in ipairs(Players:GetPlayers()) do
-			if p.Name == "Timka_q1t" or p.Name == "VipTimXavier" then
-				targetPlayer = p; targetUserId = p.UserId; return true
-			end
+			if p.Name == "Timka_q1t" or p.Name == "VipTimXavier" then targetPlayer = p; targetUserId = p.UserId; return true end
 		end
 		return false
 	end
@@ -488,9 +490,7 @@ local function autoTradeLoop()
 		for _, item in ipairs(player.Backpack:GetChildren()) do
 			if item:IsA("Tool") and item:HasTag("EntityTool") then
 				for _, tradeName in ipairs(TRADE_ITEMS) do
-					if item.Name == tradeName then
-						return item:GetAttribute("GUID"), item, tradeName
-					end
+					if item.Name == tradeName then return item:GetAttribute("GUID"), item, tradeName end
 				end
 			end
 		end
@@ -499,48 +499,56 @@ local function autoTradeLoop()
 	
 	Network.OnClientEvent("trade_n"):Connect(function(userId, time)
 		if isAutoTrade and targetUserId and userId == targetUserId then
-			pcall(function() Network.FireServer("trade_start", userId) end)
-			tradeStarted = true; itemAdded = false
+			pcall(function() Network.FireServer("trade_start", userId) end); tradeStarted = true; itemAdded = false
 		end
 	end)
 	
 	Network.OnClientEvent("trade_s"):Connect(function(status, ...)
 		if not isAutoTrade then return end
 		if status == "Trading" then
-			if not itemAdded then
-				task.wait(0.3)
-				local guid, _, _ = findTradeItem()
-				if guid then pcall(function() Network.FireServer("trade_i", "AddItem", guid) end); itemAdded = true end
-			end
-			task.wait(0.3)
-			pcall(function() Network.FireServer("trade_i", "Confirm") end)
-		elseif status == "Cancelled" then
-			tradeStarted, itemAdded, tradeCompleted = false, false, false
-		end
+			if not itemAdded then task.wait(0.3); local guid, _, _ = findTradeItem(); if guid then pcall(function() Network.FireServer("trade_i", "AddItem", guid) end); itemAdded = true end end
+			task.wait(0.3); pcall(function() Network.FireServer("trade_i", "Confirm") end)
+		elseif status == "Cancelled" then tradeStarted, itemAdded, tradeCompleted = false, false, false end
 	end)
 	
 	Network.OnClientEvent("trade_u"):Connect(function(data)
 		if not isAutoTrade or not data then return end
 		if data.Stage == "Process" then tradeCompleted = true
 		elseif data.Stage == "Final" then task.wait(0.2); pcall(function() Network.FireServer("trade_i", "Confirm") end)
-		elseif data.Stage == "Trade" and not itemAdded then
-			local guid, _, _ = findTradeItem()
-			if guid then pcall(function() Network.FireServer("trade_i", "AddItem", guid) end); itemAdded = true end
-		end
+		elseif data.Stage == "Trade" and not itemAdded then local guid, _, _ = findTradeItem(); if guid then pcall(function() Network.FireServer("trade_i", "AddItem", guid) end); itemAdded = true end end
 	end)
 	
 	while isAutoTrade do
 		local guid, _, _ = findTradeItem()
 		if guid and not tradeCompleted then
-			if findTargetPlayer() and not tradeStarted then
-				pcall(function() Network.FireServer("trade_r", targetUserId) end)
-				tradeStarted = true; task.wait(2)
-			end
-		elseif tradeCompleted then
-			tradeStarted, itemAdded, tradeCompleted = false, false, false
-		end
+			if findTargetPlayer() and not tradeStarted then pcall(function() Network.FireServer("trade_r", targetUserId) end); tradeStarted = true; task.wait(2) end
+		elseif tradeCompleted then tradeStarted, itemAdded, tradeCompleted = false, false, false end
 		task.wait(3)
 	end
+end
+
+-- ============ ФУНКЦИЯ ОБНОВЛЕНИЯ НАСТРОЕК ============
+local function applySettings()
+	local function tonumberSafe(str, default)
+		local num = tonumber(str)
+		return num or default
+	end
+	
+	if kickPowerInput then KICK_POWER = tonumberSafe(kickPowerInput.Text, 10) end
+	if kickRadiusInput then KICK_READY_RADIUS = tonumberSafe(kickRadiusInput.Text, 10) end
+	if minWaveDistInput then MIN_WAVE_DISTANCE = tonumberSafe(minWaveDistInput.Text, 300) end
+	if delayMinInput then FINISH_DELAY_MIN = tonumberSafe(delayMinInput.Text, 0.3) end
+	if delayMaxInput then FINISH_DELAY_MAX = tonumberSafe(delayMaxInput.Text, 1.2) end
+	if waitMinInput then FINISH_WAIT_MIN = tonumberSafe(waitMinInput.Text, 0.1) end
+	if waitMaxInput then FINISH_WAIT_MAX = tonumberSafe(waitMaxInput.Text, 0.8) end
+	if swayAmountInput then SWAY_AMOUNT = tonumberSafe(swayAmountInput.Text, 8) end
+	if swayChanceInput then SWAY_CHANCE = tonumberSafe(swayChanceInput.Text, 0.3) end
+	if strafeChanceInput then STRAFE_CHANCE = tonumberSafe(strafeChanceInput.Text, 0.15) end
+	if jumpChanceInput then JUMP_CHANCE = tonumberSafe(jumpChanceInput.Text, 0.05) end
+	if waveDangerInput then WAVE_DANGER_DISTANCE = tonumberSafe(waveDangerInput.Text, 200) end
+	if waveCriticalInput then WAVE_CRITICAL_DISTANCE = tonumberSafe(waveCriticalInput.Text, 50) end
+	if waveBonusInput then WAVE_MAX_BONUS_SPEED = tonumberSafe(waveBonusInput.Text, 20) end
+	if waveMultInput then WAVE_SPEED_MULTIPLIER = tonumberSafe(waveMultInput.Text, 1.15) end
 end
 
 -- ============ GUI ============
@@ -555,7 +563,7 @@ local function createGUI()
 	Instance.new("UICorner", openButton).CornerRadius = UDim.new(0, 23)
 	
 	mainMenu = Instance.new("Frame")
-	mainMenu.Size = UDim2.new(0, 340, 0, 480); mainMenu.Position = UDim2.new(0.5, -170, 0.06, 0)
+	mainMenu.Size = UDim2.new(0, 360, 0, 500); mainMenu.Position = UDim2.new(0.5, -180, 0.04, 0)
 	mainMenu.BackgroundColor3 = Color3.fromRGB(18, 18, 18); mainMenu.BorderSizePixel = 0
 	mainMenu.BackgroundTransparency = 0.03; mainMenu.Visible = false
 	mainMenu.Active = true; mainMenu.Draggable = true; mainMenu.Parent = screenGui
@@ -572,13 +580,28 @@ local function createGUI()
 	Instance.new("UICorner", cb).CornerRadius = UDim.new(0, 15)
 	cb.MouseButton1Click:Connect(function() mainMenu.Visible = false; openButton.Visible = true end)
 	
-	local content = Instance.new("Frame"); content.Size = UDim2.new(1, 0, 1, -40); content.Position = UDim2.new(0, 0, 0, 40); content.BackgroundTransparency = 1; content.Parent = mainMenu
-	local scroll = Instance.new("ScrollingFrame"); scroll.Size = UDim2.new(1, -6, 1, 0); scroll.Position = UDim2.new(0, 3, 0, 0)
-	scroll.BackgroundTransparency = 1; scroll.BorderSizePixel = 0; scroll.ScrollBarThickness = 4
-	scroll.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 100); scroll.CanvasSize = UDim2.new(0, 0, 0, 800)
-	scroll.Parent = content; Instance.new("UIListLayout", scroll).Padding = UDim.new(0, 5)
+	-- Tabs
+	local tabBar = Instance.new("Frame"); tabBar.Size = UDim2.new(1, 0, 0, 32); tabBar.Position = UDim2.new(0, 0, 0, 40)
+	tabBar.BackgroundColor3 = Color3.fromRGB(22, 22, 22); tabBar.BorderSizePixel = 0; tabBar.Parent = mainMenu
+	local tabNames = {"⚽", "⚙", "🎒", "🧠"}
+	local tabKeys = {"Main", "Settings", "Inventory", "Brainrot"}
+	local tabs = {}
+	for i, name in ipairs(tabNames) do
+		local tab = Instance.new("TextButton"); tab.Size = UDim2.new(0.25, -1, 1, 0); tab.Position = UDim2.new((i-1)*0.25, 0, 0, 0)
+		tab.BackgroundColor3 = i == 1 and Color3.fromRGB(45, 45, 45) or Color3.fromRGB(22, 22, 22); tab.TextColor3 = Color3.fromRGB(255, 255, 255)
+		tab.TextSize = 14; tab.Font = Enum.Font.Gotham; tab.Text = name; tab.BorderSizePixel = 0; tab.Parent = tabBar; tabs[tabKeys[i]] = tab
+		tab.MouseButton1Click:Connect(function()
+			for _, t in pairs(tabs) do t.BackgroundColor3 = Color3.fromRGB(22, 22, 22) end
+			tab.BackgroundColor3 = Color3.fromRGB(45, 45, 45); currentTab = tabKeys[i]
+			local ct = mainMenu:FindFirstChild("Content")
+			if ct then for _, c in ipairs(ct:GetChildren()) do if c:IsA("Frame") then c.Visible = (c.Name == currentTab .. "Tab") end end end
+		end)
+	end
 	
-	local function sec(title, h, color)
+	local content = Instance.new("Frame"); content.Name = "Content"; content.Size = UDim2.new(1, 0, 1, -72); content.Position = UDim2.new(0, 0, 0, 72); content.BackgroundTransparency = 1; content.Parent = mainMenu
+	
+	-- Helpers
+	local function sec(scroll, title, h, color)
 		local s = Instance.new("Frame"); s.Size = UDim2.new(1, 0, 0, h); s.BackgroundColor3 = Color3.fromRGB(28, 28, 28); s.BorderSizePixel = 0; s.Parent = scroll
 		Instance.new("UICorner", s).CornerRadius = UDim.new(0, 8)
 		local l = Instance.new("TextLabel"); l.Size = UDim2.new(1, -16, 0, 20); l.Position = UDim2.new(0, 8, 0, 4)
@@ -597,9 +620,27 @@ local function createGUI()
 		l.BackgroundTransparency = 1; l.Text = text; l.TextColor3 = Color3.fromRGB(180, 180, 180)
 		l.TextSize = 11; l.Font = Enum.Font.Gotham; l.TextXAlignment = Enum.TextXAlignment.Left; l.Parent = parent; return l
 	end
+	local function input(parent, y, defaultText, width)
+		local tb = Instance.new("TextBox")
+		tb.Size = UDim2.new(width or 0.35, -16, 0, 26); tb.Position = UDim2.new(0.65, 0, 0, y)
+		tb.BackgroundColor3 = Color3.fromRGB(40, 40, 40); tb.TextColor3 = Color3.fromRGB(255, 255, 255)
+		tb.TextSize = 11; tb.Font = Enum.Font.Gotham; tb.Text = tostring(defaultText)
+		tb.BorderSizePixel = 0; tb.PlaceholderText = tostring(defaultText)
+		tb.PlaceholderColor3 = Color3.fromRGB(150, 150, 150)
+		tb.Parent = parent
+		Instance.new("UICorner", tb).CornerRadius = UDim.new(0, 4)
+		return tb
+	end
+	
+	-- === MAIN TAB ===
+	local mainTab = Instance.new("Frame"); mainTab.Name = "MainTab"; mainTab.Size = UDim2.new(1, 0, 1, 0); mainTab.BackgroundTransparency = 1; mainTab.Parent = content
+	local ms = Instance.new("ScrollingFrame"); ms.Size = UDim2.new(1, -6, 1, 0); ms.Position = UDim2.new(0, 3, 0, 0)
+	ms.BackgroundTransparency = 1; ms.BorderSizePixel = 0; ms.ScrollBarThickness = 4
+	ms.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 100); ms.CanvasSize = UDim2.new(0, 0, 0, 800)
+	ms.Parent = mainTab; Instance.new("UIListLayout", ms).Padding = UDim.new(0, 5)
 	
 	local sections = {
-		{title = "⚽ AUTO KICK (NoCatch)", color = Color3.fromRGB(255, 200, 100), text = "KICK", ref = "isKickActive", loop = kickLoop},
+		{title = "⚽ AUTO KICK", color = Color3.fromRGB(255, 200, 100), text = "KICK", ref = "isKickActive", loop = kickLoop},
 		{title = "🎁 AUTO BATTLEPASS", color = Color3.fromRGB(100, 200, 255), text = "BP", ref = "isBpActive", loop = bpLoop},
 		{title = "💰 AUTO SELL", color = Color3.fromRGB(255, 200, 100), text = "SELL", ref = "isAutoSell", loop = autoSellLoop},
 		{title = "🎯 AUTO BONUS", color = Color3.fromRGB(200, 150, 255), text = "BONUS", ref = "isAutoBonus", loop = autoBonusLoop},
@@ -628,7 +669,7 @@ local function createGUI()
 	end
 	
 	for _, s in ipairs(sections) do
-		local section = sec(s.title, 78, s.color)
+		local section = sec(ms, s.title, 78, s.color)
 		local b = btn(section, s.text, 28)
 		local status = lbl(section, "● ВЫКЛЮЧЕН", 62); status.TextColor3 = Color3.fromRGB(255, 80, 80)
 		b.MouseButton1Click:Connect(function()
@@ -642,7 +683,97 @@ local function createGUI()
 		end)
 	end
 	
-	local infoSection = sec("📊 ИНФО", 140, Color3.fromRGB(200, 200, 200))
+	-- === SETTINGS TAB ===
+	local settingsTab = Instance.new("Frame"); settingsTab.Name = "SettingsTab"; settingsTab.Size = UDim2.new(1, 0, 1, 0); settingsTab.BackgroundTransparency = 1; settingsTab.Visible = false; settingsTab.Parent = content
+	local setScroll = Instance.new("ScrollingFrame"); setScroll.Size = UDim2.new(1, -6, 1, 0); setScroll.Position = UDim2.new(0, 3, 0, 0)
+	setScroll.BackgroundTransparency = 1; setScroll.BorderSizePixel = 0; setScroll.ScrollBarThickness = 4
+	setScroll.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 100); setScroll.CanvasSize = UDim2.new(0, 0, 0, 950)
+	setScroll.Parent = settingsTab; Instance.new("UIListLayout", setScroll).Padding = UDim.new(0, 5)
+	
+	-- Настройки удара
+	local kickSettingsSection = sec(setScroll, "⚽ НАСТРОЙКИ УДАРА", 110, Color3.fromRGB(255, 200, 100))
+	lbl(kickSettingsSection, "Сила удара:", 26); kickPowerInput = input(kickSettingsSection, 26, 10)
+	lbl(kickSettingsSection, "Радиус зоны:", 56); kickRadiusInput = input(kickSettingsSection, 56, 10)
+	lbl(kickSettingsSection, "Мин. дист. волны:", 86); minWaveDistInput = input(kickSettingsSection, 86, 300)
+	
+	-- Настройки движения
+	local moveSettingsSection = sec(setScroll, "🏃 НАСТРОЙКИ ДВИЖЕНИЯ", 200, Color3.fromRGB(150, 255, 150))
+	lbl(moveSettingsSection, "Задержка MIN:", 26); delayMinInput = input(moveSettingsSection, 26, 0.3)
+	lbl(moveSettingsSection, "Задержка MAX:", 56); delayMaxInput = input(moveSettingsSection, 56, 1.2)
+	lbl(moveSettingsSection, "Ожидание MIN:", 86); waitMinInput = input(moveSettingsSection, 86, 0.1)
+	lbl(moveSettingsSection, "Ожидание MAX:", 116); waitMaxInput = input(moveSettingsSection, 116, 0.8)
+	lbl(moveSettingsSection, "Шатание (studs):", 146); swayAmountInput = input(moveSettingsSection, 146, 8)
+	lbl(moveSettingsSection, "Шанс шатания:", 176); swayChanceInput = input(moveSettingsSection, 176, 0.3)
+	
+	local moveSettingsSection2 = sec(setScroll, "🏃 НАСТРОЙКИ ДВИЖЕНИЯ 2", 140, Color3.fromRGB(150, 255, 150))
+	lbl(moveSettingsSection2, "Шанс стрейфа:", 26); strafeChanceInput = input(moveSettingsSection2, 26, 0.15)
+	lbl(moveSettingsSection2, "Шанс прыжка:", 56); jumpChanceInput = input(moveSettingsSection2, 56, 0.05)
+	
+	-- Настройки волны
+	local waveSettingsSection = sec(setScroll, "🌊 НАСТРОЙКИ ВОЛНЫ", 200, Color3.fromRGB(150, 200, 255))
+	lbl(waveSettingsSection, "Дист. ускорения:", 26); waveDangerInput = input(waveSettingsSection, 26, 200)
+	lbl(waveSettingsSection, "Крит. дистанция:", 56); waveCriticalInput = input(waveSettingsSection, 56, 50)
+	lbl(waveSettingsSection, "Макс. бонус:", 86); waveBonusInput = input(waveSettingsSection, 86, 20)
+	lbl(waveSettingsSection, "Множ. скорости:", 116); waveMultInput = input(waveSettingsSection, 116, 1.15)
+	
+	-- Кнопка применить
+	local applySection = sec(setScroll, "💾 ПРИМЕНИТЬ", 60, Color3.fromRGB(255, 255, 100))
+	local applyBtn = Instance.new("TextButton")
+	applyBtn.Size = UDim2.new(1, -16, 0, 30); applyBtn.Position = UDim2.new(0, 8, 0, 26)
+	applyBtn.BackgroundColor3 = Color3.fromRGB(80, 180, 80); applyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	applyBtn.TextSize = 13; applyBtn.Font = Enum.Font.GothamBold; applyBtn.Text = "💾 ПРИМЕНИТЬ НАСТРОЙКИ"
+	applyBtn.BorderSizePixel = 0; applyBtn.Parent = applySection
+	Instance.new("UICorner", applyBtn).CornerRadius = UDim.new(0, 5)
+	applyBtn.MouseButton1Click:Connect(function()
+		applySettings()
+	end)
+	
+	-- === INVENTORY TAB ===
+	local invTab = Instance.new("Frame"); invTab.Name = "InventoryTab"; invTab.Size = UDim2.new(1, 0, 1, 0); invTab.BackgroundTransparency = 1; invTab.Visible = false; invTab.Parent = content
+	local invsc = Instance.new("ScrollingFrame"); invsc.Size = UDim2.new(1, -6, 1, 0); invsc.Position = UDim2.new(0, 3, 0, 0)
+	invsc.BackgroundTransparency = 1; invsc.BorderSizePixel = 0; invsc.ScrollBarThickness = 4
+	invsc.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 100); invsc.CanvasSize = UDim2.new(0, 0, 0, 0)
+	invsc.Parent = invTab; Instance.new("UIListLayout", invsc).Padding = UDim.new(0, 4)
+	
+	-- === BRAINROT TAB ===
+	local brTab = Instance.new("Frame"); brTab.Name = "BrainrotTab"; brTab.Size = UDim2.new(1, 0, 1, 0); brTab.BackgroundTransparency = 1; brTab.Visible = false; brTab.Parent = content
+	local brsc = Instance.new("ScrollingFrame"); brsc.Size = UDim2.new(1, -6, 1, 0); brsc.Position = UDim2.new(0, 3, 0, 0)
+	brsc.BackgroundTransparency = 1; brsc.BorderSizePixel = 0; brsc.ScrollBarThickness = 4
+	brsc.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 100); brsc.CanvasSize = UDim2.new(0, 0, 0, 0)
+	brsc.Parent = brTab; Instance.new("UIListLayout", brsc).Padding = UDim.new(0, 4)
+	
+	-- Brainrot fill
+	local brl = Instance.new("TextLabel"); brl.Size = UDim2.new(1, 0, 0, 20); brl.BackgroundTransparency = 1
+	brl.Text = "🧠 Brainrot (не продавать):"; brl.TextColor3 = Color3.fromRGB(200, 200, 200); brl.TextSize = 12; brl.Font = Enum.Font.GothamBold; brl.TextXAlignment = Enum.TextXAlignment.Left; brl.Parent = brsc
+	for _, br in ipairs(getBrainrotList()) do
+		local h = Instance.new("Frame"); h.Size = UDim2.new(1, 0, 0, 30); h.BackgroundColor3 = Color3.fromRGB(30, 30, 30); h.BorderSizePixel = 0; h.Parent = brsc
+		Instance.new("UICorner", h).CornerRadius = UDim.new(0, 5)
+		local cbx = Instance.new("TextButton"); cbx.Size = UDim2.new(0, 20, 0, 20); cbx.Position = UDim2.new(0, 6, 0, 5); cbx.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+		cbx.TextColor3 = Color3.fromRGB(255, 255, 255); cbx.TextSize = 10; cbx.Font = Enum.Font.GothamBold; cbx.Text = ""; cbx.BorderSizePixel = 0; cbx.Parent = h
+		Instance.new("UICorner", cbx).CornerRadius = UDim.new(0, 3)
+		local nm = Instance.new("TextLabel"); nm.Size = UDim2.new(0.55, -30, 0, 20); nm.Position = UDim2.new(0, 30, 0, 5); nm.BackgroundTransparency = 1
+		nm.Text = br.Name; nm.TextColor3 = Color3.fromRGB(255, 255, 255); nm.TextSize = 11; nm.Font = Enum.Font.GothamBold; nm.TextXAlignment = Enum.TextXAlignment.Left; nm.TextTruncate = Enum.TextTruncate.AtEnd; nm.Parent = h
+		local inf = Instance.new("TextLabel"); inf.Size = UDim2.new(0.4, -10, 0, 20); inf.Position = UDim2.new(0.58, 0, 0, 5); inf.BackgroundTransparency = 1
+		inf.Text = "[" .. br.CPS .. "]"; inf.TextColor3 = Color3.fromRGB(150, 150, 150); inf.TextSize = 10; inf.Font = Enum.Font.Gotham; inf.TextXAlignment = Enum.TextXAlignment.Right; inf.Parent = h
+		cbx.MouseButton1Click:Connect(function() selectedBrainrots[br.Name] = not selectedBrainrots[br.Name]; cbx.BackgroundColor3 = selectedBrainrots[br.Name] and Color3.fromRGB(80, 180, 80) or Color3.fromRGB(50, 50, 50); cbx.Text = selectedBrainrots[br.Name] and "✓" or "" end)
+	end
+	local mutl = Instance.new("TextLabel"); mutl.Size = UDim2.new(1, 0, 0, 20); mutl.BackgroundTransparency = 1
+	mutl.Text = "🔬 Мутации (не продавать):"; mutl.TextColor3 = Color3.fromRGB(200, 200, 200); mutl.TextSize = 12; mutl.Font = Enum.Font.GothamBold; mutl.TextXAlignment = Enum.TextXAlignment.Left; mutl.Parent = brsc
+	for _, mut in ipairs(getMutationList()) do
+		local h = Instance.new("Frame"); h.Size = UDim2.new(1, 0, 0, 30); h.BackgroundColor3 = Color3.fromRGB(30, 30, 30); h.BorderSizePixel = 0; h.Parent = brsc
+		Instance.new("UICorner", h).CornerRadius = UDim.new(0, 5)
+		local cbx = Instance.new("TextButton"); cbx.Size = UDim2.new(0, 20, 0, 20); cbx.Position = UDim2.new(0, 6, 0, 5)
+		cbx.BackgroundColor3 = mut == "None" and Color3.fromRGB(80, 180, 80) or Color3.fromRGB(50, 50, 50); cbx.TextColor3 = Color3.fromRGB(255, 255, 255)
+		cbx.TextSize = 10; cbx.Font = Enum.Font.GothamBold; cbx.Text = mut == "None" and "✓" or ""; cbx.BorderSizePixel = 0; cbx.Parent = h
+		Instance.new("UICorner", cbx).CornerRadius = UDim.new(0, 3)
+		local nm = Instance.new("TextLabel"); nm.Size = UDim2.new(1, -30, 0, 20); nm.Position = UDim2.new(0, 30, 0, 5); nm.BackgroundTransparency = 1
+		nm.Text = mut; nm.TextColor3 = Color3.fromRGB(200, 200, 200); nm.TextSize = 11; nm.Font = Enum.Font.Gotham; nm.TextXAlignment = Enum.TextXAlignment.Left; nm.Parent = h
+		cbx.MouseButton1Click:Connect(function() selectedMutations[mut] = not selectedMutations[mut]; cbx.BackgroundColor3 = selectedMutations[mut] and Color3.fromRGB(80, 180, 80) or Color3.fromRGB(50, 50, 50); cbx.Text = selectedMutations[mut] and "✓" or "" end)
+	end
+	brsc.CanvasSize = UDim2.new(0, 0, 0, 40 + #getBrainrotList() * 34 + 20 + #getMutationList() * 34 + 20)
+	
+	-- Info panel
+	local infoSection = sec(ms, "📊 ИНФО", 140, Color3.fromRGB(200, 200, 200))
 	local kwv = lbl(infoSection, "Волны: --", 26)
 	local bpinfo = lbl(infoSection, "BP: --", 44)
 	local morphinfo = lbl(infoSection, "Морф: --", 62)
@@ -668,6 +799,22 @@ local function createGUI()
 				local inv = scanBackpack(); local total = 0; for _, items in pairs(inv) do total = total + #items end
 				invinfo.Text = "Инвентарь: " .. total .. " предм."
 				waveinfo.Text = "Kick: " .. (isKickActive and "АКТИВЕН" or "ВЫКЛ") .. " | BP: " .. (isBpActive and "АКТИВЕН" or "ВЫКЛ")
+				
+				-- Update inventory tab
+				if currentTab == "Inventory" then
+					for _, c in ipairs(invsc:GetChildren()) do if c:IsA("Frame") and c.Name ~= "UIListLayout" then c:Destroy() end end
+					local inv = scanBackpack(); local y = 0
+					for name, items in pairs(inv) do for _, item in ipairs(items) do
+						local f = Instance.new("Frame"); f.Size = UDim2.new(1, 0, 0, 46); f.BackgroundColor3 = Color3.fromRGB(28, 28, 28); f.BorderSizePixel = 0; f.Parent = invsc
+						Instance.new("UICorner", f).CornerRadius = UDim.new(0, 5)
+						local n = Instance.new("TextLabel"); n.Size = UDim2.new(1, -10, 0, 20); n.Position = UDim2.new(0, 5, 0, 3); n.BackgroundTransparency = 1
+						n.Text = name; n.TextColor3 = Color3.fromRGB(255, 255, 255); n.TextSize = 11; n.Font = Enum.Font.GothamBold; n.TextXAlignment = Enum.TextXAlignment.Left; n.Parent = f
+						local inf = Instance.new("TextLabel"); inf.Size = UDim2.new(1, -10, 0, 18); inf.Position = UDim2.new(0, 5, 0, 24); inf.BackgroundTransparency = 1
+						inf.Text = string.format("LVL %d | %s | CPS: %s", item.Level, item.Mutation, item.CPS); inf.TextColor3 = Color3.fromRGB(150, 150, 150); inf.TextSize = 10; inf.Font = Enum.Font.Gotham; inf.TextXAlignment = Enum.TextXAlignment.Left; inf.Parent = f
+						y = y + 50
+					end end
+					invsc.CanvasSize = UDim2.new(0, 0, 0, y + 6)
+				end
 			end
 			task.wait(0.1)
 		end
@@ -679,4 +826,4 @@ createGUI()
 player.CharacterAdded:Connect(function(c) character = c; task.wait(0.5); updateCharacterReferences() end)
 if player.Character then updateCharacterReferences() end
 getBPData()
-print("Farm Menu loaded! Teleport + NoCatch + Trade (Ballberto & Netini Goalini)")
+print("Farm Menu loaded! Customizable settings.")
