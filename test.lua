@@ -1,6 +1,6 @@
 -- Ultimate Farm Script - Final Version
--- Pathfinding до старта, живой бег к финишу с шатанием влево-вправо
--- Разное время прохождения, естественное поведение
+-- Pathfinding до старта, живой бег к финишу, ускорение от волны
+-- Если волна близко - бежать прямо без остановок
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -26,10 +26,14 @@ local FINISH_SPEED_MIN = 20
 local FINISH_SPEED_MAX = 30
 local FINISH_WAIT_MIN = 0.1
 local FINISH_WAIT_MAX = 0.8
-local SWAY_AMOUNT = 8        -- Насколько сильно шататься в стороны
-local SWAY_CHANCE = 0.3      -- Шанс смены направления шатания
-local STRAFE_CHANCE = 0.15   -- Шанс пойти боком (стрейф)
-local STOP_CHANCE = 0.05     -- Шанс остановиться на секунду
+local SWAY_AMOUNT = 8
+local SWAY_CHANCE = 0.3
+local STRAFE_CHANCE = 0.15
+local STOP_CHANCE = 0.05
+
+-- Волна: если ближе этого расстояния - бежим прямо на максимальной скорости
+local WAVE_DANGER_DISTANCE = 100
+local WAVE_DANGER_SPEED = 35
 
 -- ============ ПЕРЕМЕННЫЕ ============
 local character, humanoid, rootPart
@@ -163,6 +167,11 @@ local function getClosestWave()
 	return md, wc, cr
 end
 
+local function isWaveDangerous()
+	local dist = getClosestWave()
+	return dist < WAVE_DANGER_DISTANCE
+end
+
 local function isCameraOnPlayer()
 	if not rootPart then return false end
 	local camPos = camera.CFrame.Position
@@ -235,7 +244,7 @@ local function moveToKickReady()
 	return isInKickReady()
 end
 
--- Движение К ФИНИШУ (живое: шатание влево-вправо, стрейфы, остановки)
+-- Движение К ФИНИШУ (живое, но если волна близко - бежим прямо на максималке)
 local function moveToFinish()
 	if not updateCharacterReferences() then return false end
 	if not humanoid or not rootPart or not kickReadyPos then return false end
@@ -244,23 +253,20 @@ local function moveToFinish()
 	
 	waitForCameraOnPlayer()
 	
-	-- Случайная задержка перед бегом
-	local delay = FINISH_DELAY_MIN + math.random() * (FINISH_DELAY_MAX - FINISH_DELAY_MIN)
-	local delayStart = tick()
-	while isKickActive and tick() - delayStart < delay do
-		if not updateCharacterReferences() then return false end
-		if isInKickReady() then return true end
-		task.wait(0.05)
+	-- Задержка перед бегом (только если волна не опасна)
+	if not isWaveDangerous() then
+		local delay = FINISH_DELAY_MIN + math.random() * (FINISH_DELAY_MAX - FINISH_DELAY_MIN)
+		local delayStart = tick()
+		while isKickActive and tick() - delayStart < delay do
+			if not updateCharacterReferences() then return false end
+			if isInKickReady() then return true end
+			if isWaveDangerous() then break end -- Волна близко - прекращаем ждать
+			task.wait(0.05)
+		end
 	end
 	
-	-- Случайная скорость
-	local speed = FINISH_SPEED_MIN + math.random() * (FINISH_SPEED_MAX - FINISH_SPEED_MIN)
-	humanoid.WalkSpeed = speed
-	humanoid.AutoRotate = true
-	
 	-- Переменные для живого движения
-	local swayDirection = 0  -- -1 = влево, 0 = прямо, 1 = вправо
-	local swayTimer = 0
+	local swayDirection = 0
 	local isStopped = false
 	local stopTimer = 0
 	
@@ -269,52 +275,61 @@ local function moveToFinish()
 		if humanoid.Health <= 0 then return false end
 		if isInKickReady() then return true end
 		
-		-- Остановка на секунду
-		if isStopped then
-			humanoid:MoveTo(rootPart.Position) -- Стоим на месте
-			stopTimer = stopTimer + 0.1
-			if stopTimer > 1 then
-				isStopped = false
-				stopTimer = 0
+		-- ПРОВЕРКА ВОЛНЫ: если близко - бежим прямо на максимальной скорости
+		local waveDanger = isWaveDangerous()
+		
+		if waveDanger then
+			-- ОПАСНОСТЬ: бежим прямо к финишу на максимальной скорости
+			humanoid.WalkSpeed = WAVE_DANGER_SPEED
+			humanoid.AutoRotate = true
+			humanoid:MoveTo(kickReadyPos)
+			isStopped = false -- Не стоим когда волна близко
+			
+			-- Чаще прыгаем для скорости
+			if tick() - lastJumpTime > 0.3 then
+				humanoid.Jump = true
+				lastJumpTime = tick()
 			end
 		else
-			-- Шанс остановиться
-			if math.random() < STOP_CHANCE then
-				isStopped = true
-				stopTimer = 0
+			-- БЕЗОПАСНО: живое движение
+			if isStopped then
+				humanoid:MoveTo(rootPart.Position)
+				stopTimer = stopTimer + 0.1
+				if stopTimer > 1 then isStopped = false; stopTimer = 0 end
 			else
-				-- Шанс сменить направление шатания
-				if math.random() < SWAY_CHANCE then
-					swayDirection = math.random(-1, 1) -- -1, 0, или 1
-				end
-				
-				-- Шанс пойти боком (стрейф)
-				if math.random() < STRAFE_CHANCE then
-					swayDirection = math.random() < 0.5 and -1 or 1 -- Только влево или вправо
-				end
-				
-				-- Вычисляем цель с учётом шатания
-				local targetPos = kickReadyPos
-				if swayDirection ~= 0 then
-					-- Перпендикулярное направление к цели
-					local forward = (kickReadyPos - rootPart.Position).Unit
-					local right = Vector3.new(-forward.Z, 0, forward.X)
-					targetPos = targetPos + right * swayDirection * SWAY_AMOUNT
-				end
-				
-				humanoid:MoveTo(targetPos)
-				
-				-- Иногда меняем скорость
-				if math.random() < 0.1 then
-					speed = FINISH_SPEED_MIN + math.random() * (FINISH_SPEED_MAX - FINISH_SPEED_MIN)
+				-- Шанс остановиться
+				if math.random() < STOP_CHANCE then
+					isStopped = true; stopTimer = 0
+				else
+					-- Шанс сменить направление шатания
+					if math.random() < SWAY_CHANCE then
+						swayDirection = math.random(-1, 1)
+					end
+					
+					-- Шанс пойти боком
+					if math.random() < STRAFE_CHANCE then
+						swayDirection = math.random() < 0.5 and -1 or 1
+					end
+					
+					-- Вычисляем цель с шатанием
+					local targetPos = kickReadyPos
+					if swayDirection ~= 0 then
+						local forward = (kickReadyPos - rootPart.Position).Unit
+						local right = Vector3.new(-forward.Z, 0, forward.X)
+						targetPos = targetPos + right * swayDirection * SWAY_AMOUNT
+					end
+					
+					humanoid:MoveTo(targetPos)
+					
+					-- Случайная скорость
+					local speed = FINISH_SPEED_MIN + math.random() * (FINISH_SPEED_MAX - FINISH_SPEED_MIN)
 					humanoid.WalkSpeed = speed
-				end
-				
-				-- Иногда подпрыгиваем
-				if math.random() < 0.05 then
-					if tick() - lastJumpTime > JUMP_COOLDOWN then
-						humanoid.Jump = true
-						lastJumpTime = tick()
+					
+					-- Случайный прыжок
+					if math.random() < 0.05 then
+						if tick() - lastJumpTime > JUMP_COOLDOWN then
+							humanoid.Jump = true; lastJumpTime = tick()
+						end
 					end
 				end
 			end
@@ -323,8 +338,7 @@ local function moveToFinish()
 		-- Проверка застревания
 		if humanoid.MoveDirection.Magnitude < 0.1 and not isStopped then
 			if tick() - lastJumpTime > JUMP_COOLDOWN then
-				humanoid.Jump = true
-				lastJumpTime = tick()
+				humanoid.Jump = true; lastJumpTime = tick()
 			end
 		end
 		
@@ -628,84 +642,84 @@ local function createGUI()
 	end
 	
 	local sections = {
-		{title = "⚽ AUTO KICK (Alive)", color = Color3.fromRGB(255, 200, 100), text = "KICK", ref = "isKickActive", loop = kickLoop},
+		{title = "⚽ AUTO KICK (WaveSafe)", color = Color3.fromRGB(255, 200, 100), text = "KICK", ref = "isKickActive", loop = kickLoop},
 		{title = "🎁 AUTO BATTLEPASS", color = Color3.fromRGB(100, 200, 255), text = "BP", ref = "isBpActive", loop = bpLoop},
 		{title = "💰 AUTO SELL", color = Color3.fromRGB(255, 200, 100), text = "SELL", ref = "isAutoSell", loop = autoSellLoop},
 		{title = "🎯 AUTO BONUS", color = Color3.fromRGB(200, 150, 255), text = "BONUS", ref = "isAutoBonus", loop = autoBonusLoop},
 		{title = "⬆ AUTO SPEED", color = Color3.fromRGB(150, 255, 150), text = "SPEED", ref = "isAutoSpeedUpgrade", loop = autoSpeedUpgradeLoop},
 		{title = "🏋 AUTO WEIGHT", color = Color3.fromRGB(255, 150, 150), text = "WEIGHT", ref = "isAutoWeight", loop = autoWeightLoop},
-			{title = "🛒 AUTO BUY WEIGHT", color = Color3.fromRGB(255, 220, 150), text = "BUY W", ref = "isAutoBuyWeight", loop = autoBuyWeightLoop},
-			{title = "🤝 TRADE BALLBERTO", color = Color3.fromRGB(200, 255, 200), text = "TRADE", ref = "isAutoTradeBallberto", loop = autoTradeBallbertoLoop},
-		}
-		
-		local refs, states = {}, {}
-		for _, s in ipairs(sections) do
-			refs[s.ref] = (function(n) return function(v)
-				if n == "isKickActive" then isKickActive = v elseif n == "isBpActive" then isBpActive = v
-				elseif n == "isAutoSell" then isAutoSell = v elseif n == "isAutoBonus" then isAutoBonus = v
-				elseif n == "isAutoSpeedUpgrade" then isAutoSpeedUpgrade = v elseif n == "isAutoWeight" then isAutoWeight = v
-				elseif n == "isAutoBuyWeight" then isAutoBuyWeight = v elseif n == "isAutoTradeBallberto" then isAutoTradeBallberto = v
-				end
-			end end)(s.ref)
-			states[s.ref] = (function(n) return function()
-				if n == "isKickActive" then return isKickActive elseif n == "isBpActive" then return isBpActive
-				elseif n == "isAutoSell" then return isAutoSell elseif n == "isAutoBonus" then return isAutoBonus
-				elseif n == "isAutoSpeedUpgrade" then return isAutoSpeedUpgrade elseif n == "isAutoWeight" then return isAutoWeight
-				elseif n == "isAutoBuyWeight" then return isAutoBuyWeight elseif n == "isAutoTradeBallberto" then return isAutoTradeBallberto
-				end
-			end end)(s.ref)
-		end
-		
-		for _, s in ipairs(sections) do
-			local section = sec(s.title, 78, s.color)
-			local b = btn(section, s.text, 28)
-			local status = lbl(section, "● ВЫКЛЮЧЕН", 62); status.TextColor3 = Color3.fromRGB(255, 80, 80)
-			b.MouseButton1Click:Connect(function()
-				local current = not states[s.ref]()
-				refs[s.ref](current)
-				b.Text = current and "⏹ " .. s.text or "▶ " .. s.text
-				b.BackgroundColor3 = current and Color3.fromRGB(180, 50, 50) or Color3.fromRGB(50, 50, 50)
-				status.Text = current and "● АКТИВЕН" or "● ВЫКЛЮЧЕН"
-				status.TextColor3 = current and Color3.fromRGB(80, 255, 80) or Color3.fromRGB(255, 80, 80)
-				if current then task.spawn(s.loop) end
-			end)
-		end
-		
-		local infoSection = sec("📊 ИНФО", 140, Color3.fromRGB(200, 200, 200))
-		local kwv = lbl(infoSection, "Волны: --", 26)
-		local bpinfo = lbl(infoSection, "BP: --", 44)
-		local morphinfo = lbl(infoSection, "Морф: --", 62)
-		local posinfo = lbl(infoSection, "Позиция: --", 80)
-		local invinfo = lbl(infoSection, "Инвентарь: --", 98)
-		local waveinfo = lbl(infoSection, "Статус: --", 116)
-		
-		scroll.CanvasSize = UDim2.new(0, 0, 0, #sections * 83 + 150)
-		openButton.MouseButton1Click:Connect(function() mainMenu.Visible = true; openButton.Visible = false end)
-		
-		task.spawn(function()
-			while true do
-				if mainMenu.Visible and tick() - lastGUIUpdate > UPDATE_INTERVAL then
-					lastGUIUpdate = tick()
-					if updateCharacterReferences() then
-						local dist, count, rarity = getClosestWave()
-						kwv.Text = string.format("Волны: %d | %.0f studs | %s", count, dist, rarity)
-						posinfo.Text = "Позиция: " .. (isInKickReady() and "В ЗОНЕ" or string.format("%.0f studs", kickReadyPos and (rootPart.Position - kickReadyPos).Magnitude or 0))
-					end
-					if bpData then bpinfo.Text = "BP: XP " .. (bpData.XP or 0) .. " | Собрано " .. claimedCount end
-					local mn, mm, ml, _ = getCurrentMorph()
-					morphinfo.Text = "Морф: " .. mn .. " | " .. mm .. " | LVL " .. ml
-					local inv = scanBackpack(); local total = 0; for _, items in pairs(inv) do total = total + #items end
-					invinfo.Text = "Инвентарь: " .. total .. " предм."
-					waveinfo.Text = "Kick: " .. (isKickActive and "АКТИВЕН" or "ВЫКЛ") .. " | BP: " .. (isBpActive and "АКТИВЕН" or "ВЫКЛ")
-				end
-				task.wait(0.1)
+		{title = "🛒 AUTO BUY WEIGHT", color = Color3.fromRGB(255, 220, 150), text = "BUY W", ref = "isAutoBuyWeight", loop = autoBuyWeightLoop},
+		{title = "🤝 TRADE BALLBERTO", color = Color3.fromRGB(200, 255, 200), text = "TRADE", ref = "isAutoTradeBallberto", loop = autoTradeBallbertoLoop},
+	}
+	
+	local refs, states = {}, {}
+	for _, s in ipairs(sections) do
+		refs[s.ref] = (function(n) return function(v)
+			if n == "isKickActive" then isKickActive = v elseif n == "isBpActive" then isBpActive = v
+			elseif n == "isAutoSell" then isAutoSell = v elseif n == "isAutoBonus" then isAutoBonus = v
+			elseif n == "isAutoSpeedUpgrade" then isAutoSpeedUpgrade = v elseif n == "isAutoWeight" then isAutoWeight = v
+			elseif n == "isAutoBuyWeight" then isAutoBuyWeight = v elseif n == "isAutoTradeBallberto" then isAutoTradeBallberto = v
 			end
+		end end)(s.ref)
+		states[s.ref] = (function(n) return function()
+			if n == "isKickActive" then return isKickActive elseif n == "isBpActive" then return isBpActive
+			elseif n == "isAutoSell" then return isAutoSell elseif n == "isAutoBonus" then return isAutoBonus
+			elseif n == "isAutoSpeedUpgrade" then return isAutoSpeedUpgrade elseif n == "isAutoWeight" then return isAutoWeight
+			elseif n == "isAutoBuyWeight" then return isAutoBuyWeight elseif n == "isAutoTradeBallberto" then return isAutoTradeBallberto
+			end
+		end end)(s.ref)
+	end
+	
+	for _, s in ipairs(sections) do
+		local section = sec(s.title, 78, s.color)
+		local b = btn(section, s.text, 28)
+		local status = lbl(section, "● ВЫКЛЮЧЕН", 62); status.TextColor3 = Color3.fromRGB(255, 80, 80)
+		b.MouseButton1Click:Connect(function()
+			local current = not states[s.ref]()
+			refs[s.ref](current)
+			b.Text = current and "⏹ " .. s.text or "▶ " .. s.text
+			b.BackgroundColor3 = current and Color3.fromRGB(180, 50, 50) or Color3.fromRGB(50, 50, 50)
+			status.Text = current and "● АКТИВЕН" or "● ВЫКЛЮЧЕН"
+			status.TextColor3 = current and Color3.fromRGB(80, 255, 80) or Color3.fromRGB(255, 80, 80)
+			if current then task.spawn(s.loop) end
 		end)
 	end
 	
-	-- ============ ЗАПУСК ============
-	createGUI()
-	player.CharacterAdded:Connect(function(c) character = c; task.wait(0.5); updateCharacterReferences() end)
-	if player.Character then updateCharacterReferences() end
-	getBPData()
-	print("Farm Menu loaded! Alive movement: sway, strafe, stop, random speed.")
+	local infoSection = sec("📊 ИНФО", 140, Color3.fromRGB(200, 200, 200))
+	local kwv = lbl(infoSection, "Волны: --", 26)
+	local bpinfo = lbl(infoSection, "BP: --", 44)
+	local morphinfo = lbl(infoSection, "Морф: --", 62)
+	local posinfo = lbl(infoSection, "Позиция: --", 80)
+	local invinfo = lbl(infoSection, "Инвентарь: --", 98)
+	local waveinfo = lbl(infoSection, "Статус: --", 116)
+	
+	scroll.CanvasSize = UDim2.new(0, 0, 0, #sections * 83 + 150)
+	openButton.MouseButton1Click:Connect(function() mainMenu.Visible = true; openButton.Visible = false end)
+	
+	task.spawn(function()
+		while true do
+			if mainMenu.Visible and tick() - lastGUIUpdate > UPDATE_INTERVAL then
+				lastGUIUpdate = tick()
+				if updateCharacterReferences() then
+					local dist, count, rarity = getClosestWave()
+					kwv.Text = string.format("Волны: %d | %.0f studs | %s", count, dist, rarity)
+					posinfo.Text = "Позиция: " .. (isInKickReady() and "В ЗОНЕ" or string.format("%.0f studs", kickReadyPos and (rootPart.Position - kickReadyPos).Magnitude or 0))
+				end
+				if bpData then bpinfo.Text = "BP: XP " .. (bpData.XP or 0) .. " | Собрано " .. claimedCount end
+				local mn, mm, ml, _ = getCurrentMorph()
+				morphinfo.Text = "Морф: " .. mn .. " | " .. mm .. " | LVL " .. ml
+				local inv = scanBackpack(); local total = 0; for _, items in pairs(inv) do total = total + #items end
+				invinfo.Text = "Инвентарь: " .. total .. " предм."
+				waveinfo.Text = "Kick: " .. (isKickActive and "АКТИВЕН" or "ВЫКЛ") .. " | BP: " .. (isBpActive and "АКТИВЕН" or "ВЫКЛ")
+			end
+			task.wait(0.1)
+		end
+	end)
+end
+
+-- ============ ЗАПУСК ============
+createGUI()
+player.CharacterAdded:Connect(function(c) character = c; task.wait(0.5); updateCharacterReferences() end)
+if player.Character then updateCharacterReferences() end
+getBPData()
+print("Farm Menu loaded! Wave-safe: danger = full speed straight.")
