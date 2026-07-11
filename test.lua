@@ -294,17 +294,19 @@ local function kickLoop()
 		local inGame = player:GetAttribute("InGame")
 		local kd = player:GetAttribute("KickDebounced")
 		
+		-- ЕСЛИ НЕ В ЗОНЕ - ТЕЛЕПОРТИРУЕМСЯ (ВЕЧНО)
 		if not isInKickReady() then
 			if inGame == nil and kd == nil then
-				if not hasTeleported then teleportToStart() end
+				-- ВЕЧНАЯ ТЕЛЕПОРТАЦИЯ К СТАРТУ ПОКА НЕ ОКАЖЕМСЯ В ЗОНЕ
+				teleportToStart()
 			else
-				hasTeleported = false
+				-- Мяч в игре - бежим к финишу
 				moveToFinish()
 			end
 		end
 		
+		-- УДАР ЕСЛИ В ЗОНЕ
 		if isInKickReady() and inGame == nil and kd == nil then
-			hasTeleported = false
 			local waitTime = FINISH_WAIT_MIN + math.random() * (FINISH_WAIT_MAX - FINISH_WAIT_MIN)
 			local waitStart = tick()
 			while isKickActive and tick() - waitStart < waitTime do
@@ -324,7 +326,7 @@ local function kickLoop()
 			end
 		end
 		
-		task.wait(0.1)
+		task.wait(0.05) -- БЫСТРАЯ ПРОВЕРКА ДЛЯ ВЕЧНОЙ ТЕЛЕПОРТАЦИИ
 	end
 end
 
